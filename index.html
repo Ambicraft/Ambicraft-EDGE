@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ambicraft EDGE — Packaging Design, Estimation & Costing</title>
+<title>Ambicraft EDGE</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -18,8 +18,26 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useCallback } = React;
 
+async function localGet(key) {
+  try {
+    const raw = localStorage.getItem("boxcalc_" + key);
+    return raw ? { value: raw } : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function localSet(key, value) {
+  try {
+    localStorage.setItem("boxcalc_" + key, value);
+    return true;
+  } catch (e) {
+    return null;
+  }
+}
+
 
 const FONT_LINK_ID = "boxcalc-fonts";
+const STAFF_PASSWORD = "ambicraft2026"; // change this to your own password
 
 const DEFAULT_FLAP_BY_PLY = { 3: 0.5, 5: 0.6, 7: 0.7 };
 const CM_TO_IN = 1 / 2.54;
@@ -45,8 +63,21 @@ function layerLabel(type, index, types) {
   return `Middle liner ${linerIndex}`;
 }
 
+function defaultLayerBFs(ply) {
+  return layerTypesForPly(ply).map(() => "20");
+}
+
+const BF_OPTIONS = ["16", "18", "20", "22", "24"];
+
+const DEFAULT_BF_PRICES = {
+  "16": "33",
+  "18": "33.5",
+  "20": "34.5",
+  "22": "36",
+  "24": "37.5",
+};
+
 const DEFAULT_COST_COMPONENTS = {
-  kraftPaper: "38",
   labour: "3.5",
   power: "1.5",
   corrugationGum: "1.5",
@@ -59,7 +90,6 @@ const DEFAULT_COST_COMPONENTS = {
 };
 
 const COST_FIELD_LABELS = [
-  ["kraftPaper", "Kraft paper"],
   ["labour", "Labour cost"],
   ["power", "Power"],
   ["corrugationGum", "Corrugation & pasting gum"],
@@ -71,23 +101,47 @@ const COST_FIELD_LABELS = [
   ["bundling", "Bundling"],
 ];
 
-const emptyForm = {
-  customerName: "",
-  itemName: "",
-  qty: "",
-  L: "30",
-  W: "20",
-  H: "25",
-  ply: "3",
-  nUp: "1",
+const FACTORY_DEFAULTS = {
   joint: "3.5",
   reelTrim: "2",
   cuttingTrim: "1.5",
-  flap: "0.5",
-  layerGsms: defaultLayerGsms("3"),
+  flapByPly: { "3": "0.5", "5": "0.6", "7": "0.7" },
+  layerGsmsByPly: {
+    "3": ["150", "130", "150"],
+    "5": ["150", "130", "150", "130", "150"],
+    "7": ["150", "130", "150", "130", "150", "130", "150"],
+  },
+  layerBFsByPly: {
+    "3": ["20", "20", "20"],
+    "5": ["20", "20", "20", "20", "20"],
+    "7": ["20", "20", "20", "20", "20", "20", "20"],
+  },
+  bfPrices: { ...DEFAULT_BF_PRICES },
   weightAddition: "15",
   costComponents: { ...DEFAULT_COST_COMPONENTS },
 };
+
+function buildEmptyForm(defaults, ply) {
+  const p = ply || "3";
+  return {
+    customerName: "",
+    itemName: "",
+    qty: "",
+    L: "30",
+    W: "20",
+    H: "25",
+    ply: p,
+    nUp: "1",
+    joint: defaults.joint,
+    reelTrim: defaults.reelTrim,
+    cuttingTrim: defaults.cuttingTrim,
+    flap: defaults.flapByPly[p] ?? "0.5",
+    layerGsms: [...(defaults.layerGsmsByPly[p] || defaultLayerGsms(p))],
+    layerBFs: [...(defaults.layerBFsByPly[p] || defaultLayerBFs(p))],
+    weightAddition: defaults.weightAddition,
+    costComponents: { ...defaults.costComponents },
+  };
+}
 
 function num(v) {
   const n = parseFloat(v);
@@ -105,17 +159,23 @@ function computeCuttingSize(L, W, joint, cuttingTrim) {
   return 2 * (L + W) + joint + cuttingTrim;
 }
 
-function BoxCalc() {
+function StaffApp({ onExit }) {
   const [tab, setTab] = useState("calc");
-  const [form, setForm] = useState(emptyForm);
+  const [defaults, setDefaults] = useState(FACTORY_DEFAULTS);
+  const [form, setForm] = useState(buildEmptyForm(FACTORY_DEFAULTS, "3"));
   const [flapOverridden, setFlapOverridden] = useState(false);
+  const [layersOverridden, setLayersOverridden] = useState(false);
   const [orders, setOrders] = useState([]);
+  const [customerSubmissions, setCustomerSubmissions] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [search, setSearch] = useState("");
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirmDeleteSub, setConfirmDeleteSub] = useState(null);
+  const [editingDefaults, setEditingDefaults] = useState(false);
+  const [draftDefaults, setDraftDefaults] = useState(FACTORY_DEFAULTS);
 
   // Load Google Fonts
   useEffect(() => {
@@ -129,27 +189,107 @@ function BoxCalc() {
     }
   }, []);
 
+  // Load saved defaults from storage
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localGet("defaults");
+        if (res && res.value) {
+          const saved = JSON.parse(res.value);
+          const merged = {
+            ...FACTORY_DEFAULTS,
+            ...saved,
+            flapByPly: { ...FACTORY_DEFAULTS.flapByPly, ...(saved.flapByPly || {}) },
+            layerGsmsByPly: { ...FACTORY_DEFAULTS.layerGsmsByPly, ...(saved.layerGsmsByPly || {}) },
+            layerBFsByPly: { ...FACTORY_DEFAULTS.layerBFsByPly, ...(saved.layerBFsByPly || {}) },
+            bfPrices: { ...FACTORY_DEFAULTS.bfPrices, ...(saved.bfPrices || {}) },
+            costComponents: { ...FACTORY_DEFAULTS.costComponents, ...(saved.costComponents || {}) },
+          };
+          setDefaults(merged);
+          setDraftDefaults(merged);
+          setForm(buildEmptyForm(merged, "3"));
+        }
+      } catch (e) {
+        // no saved defaults yet, factory defaults already in place
+      }
+    })();
+  }, []);
+
   // Load orders from storage
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("boxcalc_orders");
-      if (raw) setOrders(JSON.parse(raw));
-    } catch (e) {
-      // no orders yet
-    } finally {
-      setLoading(false);
-    }
+    (async () => {
+      try {
+        const res = await localGet("orders");
+        if (res && res.value) {
+          setOrders(JSON.parse(res.value));
+        }
+      } catch (e) {
+        // no orders yet
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, []);
 
   const persistOrders = useCallback(async (next) => {
     setOrders(next);
     try {
-      localStorage.setItem("boxcalc_orders", JSON.stringify(next));
+      await localSet("orders", JSON.stringify(next));
     } catch (e) {
       console.error("Failed to save orders", e);
       setToast({ type: "error", msg: "Could not save — try again" });
     }
   }, []);
+
+  // Load customer submissions from storage
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localGet("customerSubmissions");
+        if (res && res.value) {
+          setCustomerSubmissions(JSON.parse(res.value));
+        }
+      } catch (e) {
+        // none yet
+      }
+    })();
+  }, []);
+
+  const persistCustomerSubmissions = useCallback(async (next) => {
+    setCustomerSubmissions(next);
+    try {
+      await localSet("customerSubmissions", JSON.stringify(next));
+    } catch (e) {
+      console.error("Failed to save customer submissions", e);
+    }
+  }, []);
+
+  async function deleteSubmission(id) {
+    const next = customerSubmissions.filter((s) => s.id !== id);
+    await persistCustomerSubmissions(next);
+    setConfirmDeleteSub(null);
+    showToast("success", "Submission removed");
+  }
+
+  function loadSubmissionIntoCalculator(s) {
+    setForm((f) => ({
+      ...buildEmptyForm(defaults, s.ply),
+      customerName: s.customerName,
+      itemName: s.itemName,
+      qty: String(s.qty),
+      L: String(s.L),
+      W: String(s.W),
+      H: String(s.H),
+      ply: s.ply,
+      layerGsms: s.layerGsms || defaultLayerGsms(s.ply),
+      layerBFs: s.layerBFs || defaultLayerBFs(s.ply),
+    }));
+    setEditingId(null);
+    setFlapOverridden(false);
+    setLayersOverridden(false);
+    setTab("calc");
+    showToast("success", "Loaded into calculator — review and save as an order");
+  }
 
   function showToast(type, msg) {
     setToast({ type, msg });
@@ -160,23 +300,42 @@ function BoxCalc() {
     setForm((f) => ({ ...f, [key]: value }));
     if (key === "flap") setFlapOverridden(true);
     if (key === "ply" && !flapOverridden) {
-      setForm((f) => ({ ...f, ply: value, flap: String(DEFAULT_FLAP_BY_PLY[value] ?? 0.5) }));
+      setForm((f) => ({ ...f, ply: value, flap: String(defaults.flapByPly[value] ?? "0.5") }));
     }
     if (key === "ply") {
       setForm((f) => {
         const newTypes = layerTypesForPly(value);
-        const defaults = defaultLayerGsms(value);
-        const merged = newTypes.map((_, i) => (f.layerGsms[i] !== undefined ? f.layerGsms[i] : defaults[i]));
-        return { ...f, layerGsms: merged };
+        const plyDefaults = defaults.layerGsmsByPly[value] || defaultLayerGsms(value);
+        const bfDefaults = defaults.layerBFsByPly[value] || defaultLayerBFs(value);
+        // If the user hasn't manually edited any layer values this session, always take the
+        // current saved defaults for the new ply — don't reuse stale values left over from
+        // whatever ply was selected before.
+        const mergedGsm = layersOverridden
+          ? newTypes.map((_, i) => (f.layerGsms[i] !== undefined ? f.layerGsms[i] : plyDefaults[i]))
+          : [...plyDefaults];
+        const mergedBF = layersOverridden
+          ? newTypes.map((_, i) => (f.layerBFs[i] !== undefined ? f.layerBFs[i] : bfDefaults[i]))
+          : [...bfDefaults];
+        return { ...f, layerGsms: mergedGsm, layerBFs: mergedBF };
       });
     }
   }
 
   function updateLayerGsm(index, value) {
+    setLayersOverridden(true);
     setForm((f) => {
       const next = [...f.layerGsms];
       next[index] = value;
       return { ...f, layerGsms: next };
+    });
+  }
+
+  function updateLayerBF(index, value) {
+    setLayersOverridden(true);
+    setForm((f) => {
+      const next = [...f.layerBFs];
+      next[index] = value;
+      return { ...f, layerBFs: next };
     });
   }
 
@@ -185,18 +344,80 @@ function BoxCalc() {
   }
 
   function resetCostsToDefault() {
-    setForm((f) => ({ ...f, costComponents: { ...DEFAULT_COST_COMPONENTS } }));
+    setForm((f) => ({ ...f, costComponents: { ...defaults.costComponents } }));
   }
 
   function resetAllowancesToDefault() {
     setFlapOverridden(false);
+    setLayersOverridden(false);
     setForm((f) => ({
       ...f,
-      joint: "3.5",
-      reelTrim: "2",
-      cuttingTrim: "1.5",
-      flap: String(DEFAULT_FLAP_BY_PLY[f.ply] ?? 0.5),
+      joint: defaults.joint,
+      reelTrim: defaults.reelTrim,
+      cuttingTrim: defaults.cuttingTrim,
+      flap: defaults.flapByPly[f.ply] ?? "0.5",
+      layerGsms: [...(defaults.layerGsmsByPly[f.ply] || defaultLayerGsms(f.ply))],
+      layerBFs: [...(defaults.layerBFsByPly[f.ply] || defaultLayerBFs(f.ply))],
     }));
+  }
+
+  // ---- Defaults editing ----
+  function startEditingDefaults() {
+    setDraftDefaults(JSON.parse(JSON.stringify(defaults)));
+    setEditingDefaults(true);
+  }
+
+  function cancelEditingDefaults() {
+    setDraftDefaults(defaults);
+    setEditingDefaults(false);
+  }
+
+  function updateDraftField(key, value) {
+    setDraftDefaults((d) => ({ ...d, [key]: value }));
+  }
+
+  function updateDraftFlap(ply, value) {
+    setDraftDefaults((d) => ({ ...d, flapByPly: { ...d.flapByPly, [ply]: value } }));
+  }
+
+  function updateDraftLayerGsm(ply, index, value) {
+    setDraftDefaults((d) => {
+      const arr = [...(d.layerGsmsByPly[ply] || defaultLayerGsms(ply))];
+      arr[index] = value;
+      return { ...d, layerGsmsByPly: { ...d.layerGsmsByPly, [ply]: arr } };
+    });
+  }
+
+  function updateDraftLayerBF(ply, index, value) {
+    setDraftDefaults((d) => {
+      const arr = [...(d.layerBFsByPly[ply] || defaultLayerBFs(ply))];
+      arr[index] = value;
+      return { ...d, layerBFsByPly: { ...d.layerBFsByPly, [ply]: arr } };
+    });
+  }
+
+  function updateDraftBfPrice(bf, value) {
+    setDraftDefaults((d) => ({ ...d, bfPrices: { ...d.bfPrices, [bf]: value } }));
+  }
+
+  function updateDraftCost(key, value) {
+    setDraftDefaults((d) => ({ ...d, costComponents: { ...d.costComponents, [key]: value } }));
+  }
+
+  async function saveDefaults() {
+    setDefaults(draftDefaults);
+    setEditingDefaults(false);
+    try {
+      await localSet("defaults", JSON.stringify(draftDefaults));
+      showToast("success", "Defaults saved — new orders will use these");
+    } catch (e) {
+      console.error("Failed to save defaults", e);
+      showToast("error", "Could not save defaults — try again");
+    }
+  }
+
+  function restoreFactoryDefaults() {
+    setDraftDefaults(JSON.parse(JSON.stringify(FACTORY_DEFAULTS)));
   }
 
   const L = num(form.L),
@@ -225,19 +446,33 @@ function BoxCalc() {
 
   const reelSize1Up = useMemo(() => computeReelSize(1, H, W, flap, reelTrim), [H, W, flap, reelTrim]);
 
-  const weightPerBox = useMemo(() => {
-    const lenIn = reelSize1Up * CM_TO_IN;
-    const widIn = cuttingSize * CM_TO_IN;
-    const base = (lenIn * widIn * totalGsm) / WEIGHT_CONSTANT;
-    return base + num(form.weightAddition);
-  }, [reelSize1Up, cuttingSize, totalGsm, form.weightAddition]);
+  const boardAreaIn2 = useMemo(() => {
+    return (reelSize1Up * CM_TO_IN) * (cuttingSize * CM_TO_IN);
+  }, [reelSize1Up, cuttingSize]);
 
-  const totalCostPerKg = useMemo(() => {
+  const weightPerBox = useMemo(() => {
+    const base = (boardAreaIn2 * totalGsm) / WEIGHT_CONSTANT;
+    return base + num(form.weightAddition);
+  }, [boardAreaIn2, totalGsm, form.weightAddition]);
+
+  const kraftPaperCost = useMemo(() => {
+    return layerTypes.reduce((sum, type, i) => {
+      const g = num(form.layerGsms[i]);
+      const eff = type === "flute" ? 1.5 * g : g;
+      const layerWeightG = (boardAreaIn2 * eff) / WEIGHT_CONSTANT;
+      const bf = form.layerBFs[i];
+      const rate = num(defaults.bfPrices[bf]);
+      return sum + (layerWeightG / 1000) * rate;
+    }, 0);
+  }, [layerTypes, form.layerGsms, form.layerBFs, boardAreaIn2, defaults.bfPrices]);
+
+  const otherCostPerKg = useMemo(() => {
     return COST_FIELD_LABELS.reduce((sum, [key]) => sum + num(form.costComponents[key]), 0);
   }, [form.costComponents]);
 
-  const costPerGram = totalCostPerKg / 1000;
-  const costPerBox = costPerGram * weightPerBox;
+  const otherCost = (otherCostPerKg / 1000) * weightPerBox;
+  const costPerBox = kraftPaperCost + otherCost;
+  const totalCostPerKg = otherCostPerKg; // process costs only, paper priced separately by BF
   const totalOrderCost = qtyNum > 0 ? costPerBox * qtyNum : null;
 
 
@@ -278,10 +513,12 @@ function BoxCalc() {
       cuttingSizeCm: cuttingSize,
       boardsRequired: Math.ceil(num(form.qty) / nUp),
       layerGsms: form.layerGsms,
+      layerBFs: form.layerBFs,
       weightAddition: num(form.weightAddition),
       totalGsm,
       weightPerBoxG: weightPerBox,
       costComponents: form.costComponents,
+      kraftPaperCost,
       totalCostPerKg,
       costPerBox,
       totalOrderCost,
@@ -298,8 +535,9 @@ function BoxCalc() {
     await persistOrders(next);
     showToast("success", editingId ? "Order updated" : "Order saved");
     setEditingId(null);
-    setForm(emptyForm);
+    setForm(buildEmptyForm(defaults, form.ply));
     setFlapOverridden(false);
+    setLayersOverridden(false);
     setTab("orders");
   }
 
@@ -318,10 +556,12 @@ function BoxCalc() {
       cuttingTrim: String(o.cuttingTrim),
       flap: String(o.flap),
       layerGsms: o.layerGsms || defaultLayerGsms(o.ply),
+      layerBFs: o.layerBFs || defaultLayerBFs(o.ply),
       weightAddition: String(o.weightAddition ?? 15),
-      costComponents: o.costComponents || { ...DEFAULT_COST_COMPONENTS },
+      costComponents: o.costComponents || { ...defaults.costComponents },
     });
     setFlapOverridden(true);
+    setLayersOverridden(true);
     setEditingId(o.id);
     setTab("calc");
   }
@@ -335,8 +575,9 @@ function BoxCalc() {
 
   function cancelEdit() {
     setEditingId(null);
-    setForm(emptyForm);
+    setForm(buildEmptyForm(defaults, "3"));
     setFlapOverridden(false);
+    setLayersOverridden(false);
   }
 
   const filteredOrders = orders.filter((o) => {
@@ -352,10 +593,11 @@ function BoxCalc() {
     const bw = cuttingSize * scale;
     const bh = reelSize * scale;
     const bandH = (H + W + flap) * scale;
-    const trimH = reelTrim * scale;
-    const wasteW = (joint + cuttingTrim) * scale;
-    return { scale, bw, bh, bandH, trimH, wasteW };
-  }, [cuttingSize, reelSize, H, W, flap, reelTrim, joint, cuttingTrim]);
+    const trimHalfH = (reelTrim / 2) * scale;
+    const cuttingTrimW = cuttingTrim * scale;
+    return { scale, bw, bh, bandH, trimHalfH, cuttingTrimW };
+  }, [cuttingSize, reelSize, H, W, flap, reelTrim, cuttingTrim]);
+
 
   return (
     <div style={styles.app}>
@@ -398,7 +640,22 @@ function BoxCalc() {
             >
               Orders {orders.length > 0 ? `(${orders.length})` : ""}
             </button>
+            <button
+              className="bc-btn"
+              style={{ ...styles.tabBtn, ...(tab === "customerOrders" ? styles.tabBtnActive : {}) }}
+              onClick={() => setTab("customerOrders")}
+            >
+              Customer Orders {customerSubmissions.length > 0 ? `(${customerSubmissions.length})` : ""}
+            </button>
+            <button
+              className="bc-btn"
+              style={{ ...styles.tabBtn, ...(tab === "defaults" ? styles.tabBtnActive : {}) }}
+              onClick={() => setTab("defaults")}
+            >
+              Defaults
+            </button>
           </nav>
+          <button className="bc-btn" style={styles.logoutBtn} onClick={onExit}>Log out</button>
         </div>
       </header>
 
@@ -465,17 +722,25 @@ function BoxCalc() {
               )}
 
               <div style={styles.divider} />
-              <div style={styles.panelLabel}>PAPER SPECIFICATION (GSM)</div>
+              <div style={styles.panelLabel}>PAPER SPECIFICATION (GSM &amp; BF)</div>
               {layerTypes.map((type, i) => (
-                <Field key={i} label={`${layerLabel(type, i, layerTypes)}${type === "flute" ? " (fluting medium)" : ""}`}>
-                  <input
-                    className="bc-input"
-                    style={styles.inputSm}
-                    type="number"
-                    value={form.layerGsms[i] ?? ""}
-                    onChange={(e) => updateLayerGsm(i, e.target.value)}
-                  />
-                </Field>
+                <div key={i} style={styles.dimRow2}>
+                  <Field label={`${layerLabel(type, i, layerTypes)}${type === "flute" ? " (fluting)" : ""} GSM`}>
+                    <input
+                      className="bc-input"
+                      style={styles.inputSm}
+                      type="number"
+                      value={form.layerGsms[i] ?? ""}
+                      onChange={(e) => updateLayerGsm(i, e.target.value)}
+                    />
+                  </Field>
+                  <Field label="BF grade">
+                    <select className="bc-select" style={styles.inputSm} value={form.layerBFs[i] ?? "20"}
+                      onChange={(e) => updateLayerBF(i, e.target.value)}>
+                      {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
+                    </select>
+                  </Field>
+                </div>
               ))}
               <Field label="Weight addition (g)">
                 <input className="bc-input" style={styles.inputSm} type="number" value={form.weightAddition}
@@ -483,7 +748,7 @@ function BoxCalc() {
               </Field>
 
               <div style={styles.divider} />
-              <div style={styles.panelLabel}>COSTING (₹ per kg of finished box)</div>
+              <div style={styles.panelLabel}>OTHER PROCESS COSTS (₹ per kg) — paper priced separately below by BF</div>
               <div style={styles.dimRow}>
                 {COST_FIELD_LABELS.slice(0, 3).map(([key, label]) => (
                   <Field key={key} label={label}>
@@ -508,17 +773,9 @@ function BoxCalc() {
                   </Field>
                 ))}
               </div>
-              <div style={styles.dimRow}>
-                {COST_FIELD_LABELS.slice(9, 10).map(([key, label]) => (
-                  <Field key={key} label={label}>
-                    <input className="bc-input" style={styles.inputSm} type="number" value={form.costComponents[key]}
-                      onChange={(e) => updateCostField(key, e.target.value)} />
-                  </Field>
-                ))}
-                <Field label="Total cost/kg (auto)">
-                  <input className="bc-input" style={{ ...styles.inputSm, background: "#F0EEE6", fontWeight: 700 }} value={fmt(totalCostPerKg)} readOnly />
-                </Field>
-              </div>
+              <Field label="Total process cost/kg (auto)">
+                <input className="bc-input" style={{ ...styles.inputSm, background: "#F0EEE6", fontWeight: 700 }} value={fmt(otherCostPerKg)} readOnly />
+              </Field>
               <button className="bc-btn" style={styles.linkBtn} onClick={resetCostsToDefault}>Reset to defaults</button>
 
               <div style={styles.divider} />
@@ -543,19 +800,24 @@ function BoxCalc() {
                 </defs>
                 {(() => {
                   const ox = 55, oy = 20;
-                  const { bw, bh, bandH, trimH } = diagram;
+                  const { bw, bh, bandH, trimHalfH, cuttingTrimW } = diagram;
                   const bands = [];
                   for (let i = 0; i < nUp; i++) {
                     bands.push(
-                      <rect key={i} x={ox} y={oy + i * bandH} width={bw} height={bandH}
+                      <rect key={i} x={ox} y={oy + trimHalfH + i * bandH} width={bw - cuttingTrimW} height={bandH}
                         fill={i % 2 === 0 ? "#EEF1F6" : "#E4E9F1"} stroke="#2B4C7E" strokeWidth="0.75" />
                     );
                   }
                   return (
                     <g fontFamily="'IBM Plex Mono', monospace">
                       <rect x={ox} y={oy} width={bw} height={bh} fill="#fff" stroke="#2B4C7E" strokeWidth="1.4" />
+                      {/* top reel-trim strip */}
+                      <rect x={ox} y={oy} width={bw - cuttingTrimW} height={trimHalfH} fill="url(#hatch)" stroke="#2B4C7E" strokeWidth="0.75" />
                       {bands}
-                      <rect x={ox} y={oy + nUp * bandH} width={bw} height={trimH} fill="url(#hatch)" stroke="#2B4C7E" strokeWidth="0.75" />
+                      {/* bottom reel-trim strip */}
+                      <rect x={ox} y={oy + trimHalfH + nUp * bandH} width={bw - cuttingTrimW} height={trimHalfH} fill="url(#hatch)" stroke="#2B4C7E" strokeWidth="0.75" />
+                      {/* cutting-trim strip, single side (right edge) */}
+                      <rect x={ox + bw - cuttingTrimW} y={oy} width={cuttingTrimW} height={bh} fill="url(#hatch)" stroke="#2B4C7E" strokeWidth="0.75" />
                       {/* cutting size dimension line (top) */}
                       <line x1={ox} y1={oy - 12} x2={ox + bw} y2={oy - 12} stroke="#1B2A4A" strokeWidth="1" />
                       <line x1={ox} y1={oy - 16} x2={ox} y2={oy - 8} stroke="#1B2A4A" strokeWidth="1" />
@@ -571,8 +833,10 @@ function BoxCalc() {
                         transform={`rotate(-90 ${ox - 20} ${oy + bh / 2})`}>
                         {fmt(reelSize)} cm
                       </text>
-                      <text x={ox + bw + 10} y={oy + nUp * bandH + trimH / 2 + 3} fontSize="9" fill="#8A5A2B">trim</text>
-                      <text x={ox + 4} y={oy + bandH / 2 + 3} fontSize="9" fill="#556077">box {nUp > 1 ? "1" : ""}</text>
+                      <text x={ox + 4} y={oy + trimHalfH / 2 + 3} fontSize="8" fill="#8A5A2B">reel trim/2</text>
+                      <text x={ox + 4} y={oy + trimHalfH + nUp * bandH + trimHalfH / 2 + 3} fontSize="8" fill="#8A5A2B">reel trim/2</text>
+                      <text x={ox + bw - cuttingTrimW / 2} y={oy + bh + 14} textAnchor="middle" fontSize="8" fill="#8A5A2B">cutting trim</text>
+                      <text x={ox + 4} y={oy + trimHalfH + bandH / 2 + 3} fontSize="9" fill="#556077">box {nUp > 1 ? "1" : ""}</text>
                     </g>
                   );
                 })()}
@@ -595,6 +859,8 @@ function BoxCalc() {
                   value={qtyNum > 0 ? `${fmt((weightPerBox * qtyNum) / 1000)} kg` : "Enter quantity"}
                   big
                 />
+                <Result label="Kraft paper cost (by BF)" value={`₹${fmt(kraftPaperCost)}`} />
+                <Result label="Other process cost" value={`₹${fmt(otherCost)}`} />
                 <Result label="Cost per box" value={`₹${fmt(costPerBox)}`} big />
                 <Result
                   label="Total order cost"
@@ -662,13 +928,14 @@ function BoxCalc() {
                       <th style={styles.th}>Ply</th>
                       <th style={styles.th}>Qty</th>
                       <th style={styles.th}>N-up</th>
-                      <th style={styles.th}>Board size</th>
+                      <th style={styles.th}>Reel size</th>
+                      <th style={styles.th}>Cutting size</th>
                       <th style={styles.th}>Boards</th>
                       <th style={styles.th}>Wt/box</th>
                       <th style={styles.th}>Cost/box</th>
                       <th style={styles.th}>Total cost</th>
                       <th style={styles.th}>Date</th>
-                      <th style={styles.th}></th>
+                      <th style={styles.stickyActionsTh}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -680,13 +947,14 @@ function BoxCalc() {
                         <td style={styles.td}>{o.ply}-ply</td>
                         <td style={styles.td}>{o.qty}</td>
                         <td style={styles.td}>{o.nUp}</td>
-                        <td style={styles.tdMono}>{fmt(o.reelSizeCm)} × {fmt(o.cuttingSizeCm)}</td>
+                        <td style={styles.tdMono}>{fmt(o.reelSizeCm)} cm</td>
+                        <td style={styles.tdMono}>{fmt(o.cuttingSizeCm)} cm</td>
                         <td style={styles.tdMono}>{o.boardsRequired ?? "—"}</td>
                         <td style={styles.tdMono}>{o.weightPerBoxG ? `${fmt(o.weightPerBoxG)} g` : "—"}</td>
                         <td style={styles.tdMono}>{o.costPerBox ? `₹${fmt(o.costPerBox)}` : "—"}</td>
                         <td style={styles.tdMono}>{o.totalOrderCost ? `₹${fmt(o.totalOrderCost)}` : "—"}</td>
                         <td style={styles.td}>{new Date(o.date).toLocaleDateString()}</td>
-                        <td style={styles.td}>
+                        <td style={styles.stickyActionsTd}>
                           <button className="bc-btn" style={styles.linkBtn} onClick={() => editOrder(o)}>Edit</button>
                           {confirmDelete === o.id ? (
                             <span>
@@ -705,9 +973,539 @@ function BoxCalc() {
             )}
           </div>
         )}
+
+        {tab === "customerOrders" && (
+          <div style={styles.panel}>
+            <div style={styles.panelLabel}>CUSTOMER QUOTE SUBMISSIONS</div>
+            {customerSubmissions.length === 0 ? (
+              <div style={styles.emptyState}>
+                No submissions yet. Once a customer submits a quote request from the customer page, it'll show up here.
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Customer</th>
+                      <th style={styles.th}>Item</th>
+                      <th style={styles.th}>L×W×H</th>
+                      <th style={styles.th}>Ply</th>
+                      <th style={styles.th}>Qty</th>
+                      <th style={styles.th}>Cost/box</th>
+                      <th style={styles.th}>Total cost</th>
+                      <th style={styles.th}>Submitted</th>
+                      <th style={styles.stickyActionsTh}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customerSubmissions.map((s) => (
+                      <tr key={s.id} className="bc-row">
+                        <td style={styles.td}>{s.customerName}</td>
+                        <td style={styles.td}>{s.itemName}</td>
+                        <td style={styles.td}>{s.L}×{s.W}×{s.H}</td>
+                        <td style={styles.td}>{s.ply}-ply</td>
+                        <td style={styles.td}>{s.qty}</td>
+                        <td style={styles.tdMono}>₹{fmt(s.costPerBox)}</td>
+                        <td style={styles.tdMono}>₹{fmt(s.totalCost)}</td>
+                        <td style={styles.td}>{new Date(s.date).toLocaleDateString()}</td>
+                        <td style={styles.stickyActionsTd}>
+                          <button className="bc-btn" style={styles.linkBtn} onClick={() => loadSubmissionIntoCalculator(s)}>Review</button>
+                          {confirmDeleteSub === s.id ? (
+                            <span>
+                              <button className="bc-btn" style={styles.linkBtnDanger} onClick={() => deleteSubmission(s.id)}>Confirm</button>
+                              <button className="bc-btn" style={styles.linkBtn} onClick={() => setConfirmDeleteSub(null)}>Cancel</button>
+                            </span>
+                          ) : (
+                            <button className="bc-btn" style={styles.linkBtnDanger} onClick={() => setConfirmDeleteSub(s.id)}>Delete</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "defaults" && (
+          <div style={styles.panel}>
+            <div style={styles.ordersHeader}>
+              <div style={styles.panelLabel}>DEFAULT PARAMETERS</div>
+              {!editingDefaults ? (
+                <button className="bc-btn" style={styles.primaryBtn2} onClick={startEditingDefaults}>Edit</button>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="bc-btn" style={styles.ghostBtn} onClick={cancelEditingDefaults}>Cancel</button>
+                  <button className="bc-btn" style={styles.primaryBtn2} onClick={saveDefaults}>Save</button>
+                </div>
+              )}
+            </div>
+            <p style={styles.defaultsHint}>
+              These values pre-fill every new order. Editing them here doesn't change any orders you've already saved —
+              it only changes what new orders start with.
+            </p>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>BOARD ALLOWANCES (cm)</div>
+            <div className="bc-grid" style={styles.grid}>
+              <Field label="Manufacturing joint">
+                {editingDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.joint}
+                    onChange={(e) => updateDraftField("joint", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{defaults.joint} cm</div>
+                )}
+              </Field>
+              <Field label="Reel trim">
+                {editingDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.reelTrim}
+                    onChange={(e) => updateDraftField("reelTrim", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{defaults.reelTrim} cm</div>
+                )}
+              </Field>
+              <Field label="Cutting trim">
+                {editingDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.cuttingTrim}
+                    onChange={(e) => updateDraftField("cuttingTrim", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{defaults.cuttingTrim} cm</div>
+                )}
+              </Field>
+              <Field label="Weight addition (g)">
+                {editingDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.weightAddition}
+                    onChange={(e) => updateDraftField("weightAddition", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{defaults.weightAddition} g</div>
+                )}
+              </Field>
+            </div>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>KRAFT PAPER PRICE BY BURST FACTOR (₹ per kg)</div>
+            <div className="bc-grid" style={styles.grid}>
+              {BF_OPTIONS.map((bf) => (
+                <Field key={bf} label={`${bf}BF`}>
+                  {editingDefaults ? (
+                    <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.bfPrices[bf]}
+                      onChange={(e) => updateDraftBfPrice(bf, e.target.value)} />
+                  ) : (
+                    <div style={styles.readOnlyVal}>₹{defaults.bfPrices[bf]}</div>
+                  )}
+                </Field>
+              ))}
+            </div>
+
+            {["3", "5", "7"].map((ply) => {
+              const types = layerTypesForPly(ply);
+              const activeDefaults = editingDefaults ? draftDefaults : defaults;
+              return (
+                <div key={ply}>
+                  <div style={styles.divider} />
+                  <div style={styles.panelLabel}>{ply}-PLY — FLAP BENDING &amp; GSM</div>
+                  <div className="bc-grid" style={styles.grid}>
+                    <Field label="Flap bending (cm)">
+                      {editingDefaults ? (
+                        <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.flapByPly[ply]}
+                          onChange={(e) => updateDraftFlap(ply, e.target.value)} />
+                      ) : (
+                        <div style={styles.readOnlyVal}>{defaults.flapByPly[ply]} cm</div>
+                      )}
+                    </Field>
+                    {types.map((type, i) => (
+                      <Field key={i} label={`${layerLabel(type, i, types)} GSM`}>
+                        {editingDefaults ? (
+                          <input className="bc-input" style={styles.inputSm} type="number"
+                            value={(draftDefaults.layerGsmsByPly[ply] || [])[i] ?? ""}
+                            onChange={(e) => updateDraftLayerGsm(ply, i, e.target.value)} />
+                        ) : (
+                          <div style={styles.readOnlyVal}>{(activeDefaults.layerGsmsByPly[ply] || [])[i]}</div>
+                        )}
+                      </Field>
+                    ))}
+                    {types.map((type, i) => (
+                      <Field key={`bf-${i}`} label={`${layerLabel(type, i, types)} BF`}>
+                        {editingDefaults ? (
+                          <select className="bc-select" style={styles.inputSm}
+                            value={(draftDefaults.layerBFsByPly[ply] || [])[i] ?? "20"}
+                            onChange={(e) => updateDraftLayerBF(ply, i, e.target.value)}>
+                            {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
+                          </select>
+                        ) : (
+                          <div style={styles.readOnlyVal}>{(activeDefaults.layerBFsByPly[ply] || [])[i]}BF</div>
+                        )}
+                      </Field>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>OTHER PROCESS COSTS (₹ per kg) — paper priced separately by BF above</div>
+            <div className="bc-grid" style={styles.grid}>
+              {COST_FIELD_LABELS.map(([key, label]) => (
+                <Field key={key} label={label}>
+                  {editingDefaults ? (
+                    <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.costComponents[key]}
+                      onChange={(e) => updateDraftCost(key, e.target.value)} />
+                  ) : (
+                    <div style={styles.readOnlyVal}>₹{defaults.costComponents[key]}</div>
+                  )}
+                </Field>
+              ))}
+            </div>
+
+            {editingDefaults && (
+              <>
+                <div style={styles.divider} />
+                <button className="bc-btn" style={styles.linkBtn} onClick={restoreFactoryDefaults}>
+                  Reset this form to original factory numbers
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );
+}
+
+// ---- Customer-facing quote form (no login) ----
+function CustomerView({ onStaffLoginClick }) {
+  const [defaults, setDefaults] = useState(FACTORY_DEFAULTS);
+  const [form, setForm] = useState(buildEmptyForm(FACTORY_DEFAULTS, "3"));
+  const [layersOverridden, setLayersOverridden] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (!document.getElementById(FONT_LINK_ID)) {
+      const link = document.createElement("link");
+      link.id = FONT_LINK_ID;
+      link.rel = "stylesheet";
+      link.href =
+        "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap";
+      document.head.appendChild(link);
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localGet("defaults");
+        if (res && res.value) {
+          const saved = JSON.parse(res.value);
+          const merged = {
+            ...FACTORY_DEFAULTS,
+            ...saved,
+            flapByPly: { ...FACTORY_DEFAULTS.flapByPly, ...(saved.flapByPly || {}) },
+            layerGsmsByPly: { ...FACTORY_DEFAULTS.layerGsmsByPly, ...(saved.layerGsmsByPly || {}) },
+            layerBFsByPly: { ...FACTORY_DEFAULTS.layerBFsByPly, ...(saved.layerBFsByPly || {}) },
+            bfPrices: { ...FACTORY_DEFAULTS.bfPrices, ...(saved.bfPrices || {}) },
+            costComponents: { ...FACTORY_DEFAULTS.costComponents, ...(saved.costComponents || {}) },
+          };
+          setDefaults(merged);
+          setForm(buildEmptyForm(merged, "3"));
+        }
+      } catch (e) {
+        // use factory defaults
+      }
+    })();
+  }, []);
+
+  function showToast(type, msg) {
+    setToast({ type, msg });
+    setTimeout(() => setToast(null), 2400);
+  }
+
+  function updateField(key, value) {
+    setForm((f) => ({ ...f, [key]: value }));
+    if (key === "ply") {
+      setForm((f) => {
+        const newTypes = layerTypesForPly(value);
+        const plyDefaults = defaults.layerGsmsByPly[value] || defaultLayerGsms(value);
+        const bfDefaults = defaults.layerBFsByPly[value] || defaultLayerBFs(value);
+        const mergedGsm = layersOverridden
+          ? newTypes.map((_, i) => (f.layerGsms[i] !== undefined ? f.layerGsms[i] : plyDefaults[i]))
+          : [...plyDefaults];
+        const mergedBF = layersOverridden
+          ? newTypes.map((_, i) => (f.layerBFs[i] !== undefined ? f.layerBFs[i] : bfDefaults[i]))
+          : [...bfDefaults];
+        return { ...f, ply: value, layerGsms: mergedGsm, layerBFs: mergedBF };
+      });
+    }
+  }
+
+  function updateLayerGsm(index, value) {
+    setLayersOverridden(true);
+    setForm((f) => {
+      const next = [...f.layerGsms];
+      next[index] = value;
+      return { ...f, layerGsms: next };
+    });
+  }
+
+  function updateLayerBF(index, value) {
+    setLayersOverridden(true);
+    setForm((f) => {
+      const next = [...f.layerBFs];
+      next[index] = value;
+      return { ...f, layerBFs: next };
+    });
+  }
+
+  const L = num(form.L), W = num(form.W), H = num(form.H), qtyNum = num(form.qty);
+  const layerTypes = useMemo(() => layerTypesForPly(form.ply), [form.ply]);
+  const totalGsm = useMemo(() => {
+    return layerTypes.reduce((sum, type, i) => {
+      const g = num(form.layerGsms[i]);
+      return sum + (type === "flute" ? 1.5 * g : g);
+    }, 0);
+  }, [layerTypes, form.layerGsms]);
+
+  const flap = num(defaults.flapByPly[form.ply] ?? "0.5");
+  const reelSize1Up = computeReelSize(1, H, W, flap, num(defaults.reelTrim));
+  const cuttingSize = computeCuttingSize(L, W, num(defaults.joint), num(defaults.cuttingTrim));
+  const boardAreaIn2 = (reelSize1Up * CM_TO_IN) * (cuttingSize * CM_TO_IN);
+  const weightPerBox = (boardAreaIn2 * totalGsm) / WEIGHT_CONSTANT + num(defaults.weightAddition);
+
+  const kraftPaperCost = layerTypes.reduce((sum, type, i) => {
+    const g = num(form.layerGsms[i]);
+    const eff = type === "flute" ? 1.5 * g : g;
+    const layerWeightG = (boardAreaIn2 * eff) / WEIGHT_CONSTANT;
+    const bf = form.layerBFs[i];
+    const rate = num(defaults.bfPrices[bf]);
+    return sum + (layerWeightG / 1000) * rate;
+  }, 0);
+
+  const otherCostPerKg = COST_FIELD_LABELS.reduce((sum, [key]) => sum + num(defaults.costComponents[key]), 0);
+  const otherCost = (otherCostPerKg / 1000) * weightPerBox;
+  const costPerBox = kraftPaperCost + otherCost;
+  const totalCost = qtyNum > 0 ? costPerBox * qtyNum : null;
+
+  function validate() {
+    if (!form.customerName.trim()) return "Please enter your name";
+    if (!form.itemName.trim()) return "Please enter the item name";
+    if (!form.qty || qtyNum <= 0) return "Please enter a quantity greater than 0";
+    if (L <= 0 || W <= 0 || H <= 0) return "Please enter valid box dimensions";
+    return null;
+  }
+
+  async function submitQuote() {
+    const err = validate();
+    if (err) {
+      showToast("error", err);
+      return;
+    }
+    const record = {
+      id: `sub_${Date.now()}`,
+      customerName: form.customerName.trim(),
+      itemName: form.itemName.trim(),
+      qty: qtyNum,
+      L, W, H,
+      ply: form.ply,
+      layerGsms: form.layerGsms,
+      layerBFs: form.layerBFs,
+      costPerBox,
+      totalCost,
+      date: new Date().toISOString(),
+    };
+    try {
+      const res = await localGet("customerSubmissions");
+      const existing = res && res.value ? JSON.parse(res.value) : [];
+      await localSet("customerSubmissions", JSON.stringify([record, ...existing]));
+      setSubmitted(true);
+    } catch (e) {
+      console.error(e);
+      showToast("error", "Could not submit — please try again");
+    }
+  }
+
+  function startOver() {
+    setForm(buildEmptyForm(defaults, "3"));
+    setLayersOverridden(false);
+    setSubmitted(false);
+  }
+
+  return (
+    <div style={styles.app}>
+      <style>{`
+        * { box-sizing: border-box; }
+        .bc-input:focus, .bc-select:focus, .bc-btn:focus-visible { outline: 2px solid #2B4C7E; outline-offset: 1px; }
+      `}</style>
+      <header style={styles.header}>
+        <div style={styles.headerInner}>
+          <div style={styles.brandRow}>
+            <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+              <path d="M2 9 L15 3 L28 9 L28 24 L15 30 L2 24 Z" stroke="#2B4C7E" strokeWidth="1.6" fill="#F0EEE6"/>
+              <path d="M2 9 L15 15 L28 9 M15 15 L15 30" stroke="#2B4C7E" strokeWidth="1.6"/>
+            </svg>
+            <div>
+              <div style={styles.brandTitle}>Ambicraft&nbsp;EDGE</div>
+              <div style={styles.brandSub}>Get a Box Quote</div>
+            </div>
+          </div>
+          <button className="bc-btn" style={styles.logoutBtn} onClick={onStaffLoginClick}>Staff Login</button>
+        </div>
+      </header>
+
+      {toast && (
+        <div style={{ ...styles.toast, ...(toast.type === "error" ? styles.toastError : styles.toastSuccess) }}>
+          {toast.msg}
+        </div>
+      )}
+
+      <main style={styles.main}>
+        <div style={{ maxWidth: 520, margin: "0 auto" }}>
+          {submitted ? (
+            <div style={{ ...styles.panel, textAlign: "center", padding: "48px 24px" }}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>✓</div>
+              <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8, color: "#1B2A4A" }}>Quote request submitted</div>
+              <div style={{ fontSize: 13.5, color: "#556077", marginBottom: 20 }}>
+                Thanks — we've received your details and will get back to you shortly about your order.
+              </div>
+              <button className="bc-btn" style={styles.primaryBtn} onClick={startOver}>Get another quote</button>
+            </div>
+          ) : (
+            <div style={styles.panel}>
+              <div style={styles.panelLabel}>YOUR DETAILS</div>
+              <Field label="Your name">
+                <input className="bc-input" style={styles.input} value={form.customerName}
+                  onChange={(e) => updateField("customerName", e.target.value)} placeholder="e.g. Sunrise Traders" />
+              </Field>
+              <Field label="Item name">
+                <input className="bc-input" style={styles.input} value={form.itemName}
+                  onChange={(e) => updateField("itemName", e.target.value)} placeholder="e.g. Mango box 5kg" />
+              </Field>
+              <Field label="Quantity required">
+                <input className="bc-input" style={styles.input} type="number" min="0" value={form.qty}
+                  onChange={(e) => updateField("qty", e.target.value)} placeholder="e.g. 500" />
+              </Field>
+
+              <div style={styles.divider} />
+              <div style={styles.panelLabel}>BOX DIMENSIONS (cm, external)</div>
+              <div style={styles.dimRow}>
+                <Field label="L"><input className="bc-input" style={styles.inputSm} type="number" value={form.L} onChange={(e) => updateField("L", e.target.value)} /></Field>
+                <Field label="W"><input className="bc-input" style={styles.inputSm} type="number" value={form.W} onChange={(e) => updateField("W", e.target.value)} /></Field>
+                <Field label="H"><input className="bc-input" style={styles.inputSm} type="number" value={form.H} onChange={(e) => updateField("H", e.target.value)} /></Field>
+              </div>
+              <Field label="Ply">
+                <select className="bc-select" style={styles.inputSm} value={form.ply} onChange={(e) => updateField("ply", e.target.value)}>
+                  <option value="3">3-ply</option>
+                  <option value="5">5-ply</option>
+                  <option value="7">7-ply</option>
+                </select>
+              </Field>
+
+              <div style={styles.divider} />
+              <div style={styles.panelLabel}>PAPER SPECIFICATION (GSM &amp; BF)</div>
+              {layerTypes.map((type, i) => (
+                <div key={i} style={styles.dimRow2}>
+                  <Field label={`${layerLabel(type, i, layerTypes)}${type === "flute" ? " (fluting)" : ""} GSM`}>
+                    <input className="bc-input" style={styles.inputSm} type="number"
+                      value={form.layerGsms[i] ?? ""} onChange={(e) => updateLayerGsm(i, e.target.value)} />
+                  </Field>
+                  <Field label="BF grade">
+                    <select className="bc-select" style={styles.inputSm} value={form.layerBFs[i] ?? "20"}
+                      onChange={(e) => updateLayerBF(i, e.target.value)}>
+                      {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
+                    </select>
+                  </Field>
+                </div>
+              ))}
+
+              <div style={styles.divider} />
+              <div style={styles.resultsGrid}>
+                <Result label="Cost per box" value={`₹${fmt(costPerBox)}`} big />
+                <Result label="Total cost" value={totalCost !== null ? `₹${fmt(totalCost)}` : "Enter quantity"} big />
+              </div>
+
+              <div style={styles.divider} />
+              <button className="bc-btn" style={styles.primaryBtn} onClick={submitQuote}>
+                Submit — request this order
+              </button>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// ---- Top-level app: customer page by default, staff behind a password gate ----
+function App() {
+  const [staffAuthed, setStaffAuthed] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("staffAuthed") === "1") setStaffAuthed(true);
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
+  function attemptLogin() {
+    if (password === STAFF_PASSWORD) {
+      try {
+        sessionStorage.setItem("staffAuthed", "1");
+      } catch (e) {
+        // ignore
+      }
+      setStaffAuthed(true);
+      setShowLogin(false);
+      setPassword("");
+      setLoginError("");
+    } else {
+      setLoginError("Incorrect password");
+    }
+  }
+
+  function logout() {
+    try {
+      sessionStorage.removeItem("staffAuthed");
+    } catch (e) {
+      // ignore
+    }
+    setStaffAuthed(false);
+  }
+
+  if (staffAuthed) {
+    return <StaffApp onExit={logout} />;
+  }
+
+  if (showLogin) {
+    return (
+      <div style={{ ...styles.app, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ ...styles.panel, width: 320 }}>
+          <div style={styles.panelLabel}>STAFF LOGIN</div>
+          <Field label="Password">
+            <input
+              className="bc-input"
+              style={styles.input}
+              type="password"
+              value={password}
+              onChange={(e) => { setPassword(e.target.value); setLoginError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && attemptLogin()}
+              autoFocus
+            />
+          </Field>
+          {loginError && <div style={{ color: "#B23B3B", fontSize: 12.5, marginBottom: 10 }}>{loginError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="bc-btn" style={styles.primaryBtn} onClick={attemptLogin}>Log in</button>
+            <button className="bc-btn" style={styles.ghostBtn} onClick={() => { setShowLogin(false); setPassword(""); setLoginError(""); }}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return <CustomerView onStaffLoginClick={() => setShowLogin(true)} />;
 }
 
 function Field({ label, children }) {
@@ -764,6 +1562,10 @@ const styles = {
     fontSize: 13.5, fontWeight: 600, color: "#556077", cursor: "pointer",
   },
   tabBtnActive: { background: "#2B4C7E", color: "#fff" },
+  logoutBtn: {
+    border: "1px solid #D8D4C6", background: "transparent", color: "#556077",
+    padding: "7px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer",
+  },
   main: { maxWidth: 1040, margin: "0 auto", padding: "24px 20px 60px" },
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 },
   panel: {
@@ -785,6 +1587,7 @@ const styles = {
     fontSize: 14, fontFamily: "'IBM Plex Mono', monospace", background: "#FDFCFA", color: "#1B2A4A",
   },
   dimRow: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 },
+  dimRow2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 4 },
   divider: { height: 1, background: "#EDEAE0", margin: "16px 0" },
   advToggle: {
     border: "none", background: "transparent", color: "#2B4C7E", fontSize: 13,
@@ -815,6 +1618,8 @@ const styles = {
   },
   td: { padding: "8px 8px", borderBottom: "1px solid #F0EEE6", color: "#2B3350" },
   tdMono: { padding: "8px 8px", borderBottom: "1px solid #F0EEE6", fontFamily: "'IBM Plex Mono', monospace", color: "#2B3350" },
+  stickyActionsTh: { position: "sticky", right: 0, background: "#fff", boxShadow: "-4px 0 6px -4px rgba(0,0,0,0.12)" },
+  stickyActionsTd: { padding: "8px 8px", borderBottom: "1px solid #F0EEE6", position: "sticky", right: 0, background: "#fff", whiteSpace: "nowrap", boxShadow: "-4px 0 6px -4px rgba(0,0,0,0.12)" },
   trHighlight: { background: "#EEF1F6" },
   ordersHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 },
   searchInput: {
@@ -822,6 +1627,15 @@ const styles = {
     width: 240, fontFamily: "inherit", background: "#FDFCFA",
   },
   emptyState: { padding: "40px 20px", textAlign: "center", color: "#8A93AC", fontSize: 14 },
+  primaryBtn2: {
+    background: "#2B4C7E", color: "#fff", border: "none", borderRadius: 7,
+    padding: "8px 16px", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+  },
+  readOnlyVal: {
+    padding: "8px 9px", borderRadius: 6, border: "1px solid #EDEAE0",
+    fontSize: 14, fontFamily: "'IBM Plex Mono', monospace", background: "#F7F6F1", color: "#556077",
+  },
+  defaultsHint: { fontSize: 12.5, color: "#8A93AC", lineHeight: 1.5, marginTop: -4, marginBottom: 4 },
   toast: {
     position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
     padding: "10px 18px", borderRadius: 8, fontSize: 13.5, fontWeight: 600, zIndex: 20,
@@ -832,7 +1646,7 @@ const styles = {
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<BoxCalc />);
+root.render(<App />);
 </script>
 </body>
 </html>
