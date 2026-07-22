@@ -431,6 +431,24 @@ function fmt(n) {
   return (Math.round(n * 100) / 100).toString();
 }
 
+// Reads a locally-cached copy of a settings object (if this browser has one
+// from a previous visit) so the very first render can show the real saved
+// values instead of a brief flash of the factory defaults while the network
+// request to fetch the latest data is still in flight. Safe no-op if this
+// storage isn't available (e.g. inside the Claude artifact preview) — falls
+// back to the given default with no error.
+function getCachedJSON(key, fallback) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      const raw = localStorage.getItem("boxcalc_" + key);
+      if (raw) return { ...fallback, ...JSON.parse(raw) };
+    }
+  } catch (e) {
+    // ignore — just use the fallback
+  }
+  return fallback;
+}
+
 function generateOrderNumber() {
   const now = new Date();
   const y = now.getFullYear().toString().slice(-2);
@@ -544,7 +562,7 @@ function computeCuttingSize(L, W, joint, cuttingTrim) {
 
 function StaffApp({ onExit }) {
   const [tab, setTab] = useState("calc");
-  const [defaults, setDefaults] = useState(FACTORY_DEFAULTS);
+  const [defaults, setDefaults] = useState(() => getCachedJSON("defaults", FACTORY_DEFAULTS));
   const [form, setForm] = useState(buildEmptyForm(FACTORY_DEFAULTS, "3"));
   const [flapOverridden, setFlapOverridden] = useState(false);
   const [layersOverridden, setLayersOverridden] = useState(false);
@@ -561,14 +579,14 @@ function StaffApp({ onExit }) {
   const [editingDefaults, setEditingDefaults] = useState(false);
   const [defaultsCostsOpen, setDefaultsCostsOpen] = useState(false);
   const [draftDefaults, setDraftDefaults] = useState(FACTORY_DEFAULTS);
-  const [customerDefaults, setCustomerDefaults] = useState(FACTORY_DEFAULTS);
+  const [customerDefaults, setCustomerDefaults] = useState(() => getCachedJSON("customerDefaults", FACTORY_DEFAULTS));
   const [editingCustomerDefaults, setEditingCustomerDefaults] = useState(false);
   const [customerDefaultsCostsOpen, setCustomerDefaultsCostsOpen] = useState(false);
   const [draftCustomerDefaults, setDraftCustomerDefaults] = useState(FACTORY_DEFAULTS);
-  const [branding, setBranding] = useState(FACTORY_BRANDING);
+  const [branding, setBranding] = useState(() => getCachedJSON("branding", FACTORY_BRANDING));
   const [draftBranding, setDraftBranding] = useState(FACTORY_BRANDING);
   const [editingBranding, setEditingBranding] = useState(false);
-  const [authSettings, setAuthSettings] = useState(FACTORY_AUTH);
+  const [authSettings, setAuthSettings] = useState(() => getCachedJSON("authSettings", FACTORY_AUTH));
   const [draftAuthSettings, setDraftAuthSettings] = useState(FACTORY_AUTH);
   const [editingAuth, setEditingAuth] = useState(false);
   const [showAuthPassword, setShowAuthPassword] = useState(false);
@@ -2298,7 +2316,7 @@ function StaffApp({ onExit }) {
 
 // ---- Customer-facing quote form (no login) ----
 function CustomerView({ onStaffLoginClick }) {
-  const [defaults, setDefaults] = useState(FACTORY_DEFAULTS);
+  const [defaults, setDefaults] = useState(() => getCachedJSON("customerDefaults", FACTORY_DEFAULTS));
   const [form, setForm] = useState({
     ...buildEmptyForm(FACTORY_DEFAULTS, "3"),
     phone: "", email: "", L: "", W: "", H: "", dimUnit: "cm",
@@ -2311,7 +2329,7 @@ function CustomerView({ onStaffLoginClick }) {
   const [submittedOrderNumber, setSubmittedOrderNumber] = useState("");
   const [submittedSizeFlag, setSubmittedSizeFlag] = useState(false);
   const [toast, setToast] = useState(null);
-  const [branding, setBranding] = useState(FACTORY_BRANDING);
+  const [branding, setBranding] = useState(() => getCachedJSON("branding", FACTORY_BRANDING));
 
   useEffect(() => {
     if (!document.getElementById(FONT_LINK_ID)) {
@@ -2760,7 +2778,7 @@ function CustomerView({ onStaffLoginClick }) {
 function App() {
   const [staffAuthed, setStaffAuthed] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
-  const [authSettings, setAuthSettings] = useState(FACTORY_AUTH);
+  const [authSettings, setAuthSettings] = useState(() => getCachedJSON("authSettings", FACTORY_AUTH));
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
