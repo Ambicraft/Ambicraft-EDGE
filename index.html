@@ -15,29 +15,84 @@
 </head>
 <body>
 <div id="root"></div>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBDL7MFUrNdNzyiXNp3i9BOnNSdHDi8ZYU",
+    authDomain: "ambicraft-edge.firebaseapp.com",
+    projectId: "ambicraft-edge",
+    storageBucket: "ambicraft-edge.firebasestorage.app",
+    messagingSenderId: "543900828526",
+    appId: "1:543900828526:web:889ecb805a5c7717d4777f"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  window.__fbGet = async (key) => {
+    const snap = await getDoc(doc(db, "boxcalc", key));
+    return snap.exists() ? { value: snap.data().value } : null;
+  };
+  window.__fbSet = async (key, value) => {
+    await setDoc(doc(db, "boxcalc", key), { value });
+    return true;
+  };
+  window.__fbReady = true;
+  window.dispatchEvent(new Event("firebase-ready"));
+</script>
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useMemo, useCallback } = React;
+
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+function waitForFirebase() {
+  return new Promise((resolve) => {
+    if (window.__fbReady) return resolve();
+    window.addEventListener("firebase-ready", () => resolve(), { once: true });
+    setTimeout(resolve, 4000);
+  });
+}
 
 async function localGet(key) {
   try {
-    const raw = localStorage.getItem("boxcalc_" + key);
-    return raw ? { value: raw } : null;
+    await waitForFirebase();
+    if (window.__fbGet) {
+      const result = await window.__fbGet(key);
+      if (result) {
+        try { localStorage.setItem("boxcalc_" + key, result.value); } catch (e) {}
+      }
+      return result;
+    }
+    throw new Error("Firebase not available");
   } catch (e) {
-    return null;
+    console.error("Firestore get failed, using local cache", e);
+    try {
+      const raw = localStorage.getItem("boxcalc_" + key);
+      return raw ? { value: raw } : null;
+    } catch (e2) {
+      return null;
+    }
   }
 }
+
 async function localSet(key, value) {
+  try { localStorage.setItem("boxcalc_" + key, value); } catch (e) {}
   try {
-    localStorage.setItem("boxcalc_" + key, value);
-    return true;
+    await waitForFirebase();
+    if (window.__fbSet) {
+      await window.__fbSet(key, value);
+      return true;
+    }
+    throw new Error("Firebase not available");
   } catch (e) {
-    return null;
+    console.error("Firestore set failed, saved locally only — will not sync to other devices", e);
+    return true;
   }
 }
 
 
 const FONT_LINK_ID = "boxcalc-fonts";
-const STAFF_PASSWORD = "ambicraft2026"; // change this to your own password
 
 const DEFAULT_FLAP_BY_PLY = { 3: 0.5, 5: 0.6, 7: 0.7 };
 const CM_TO_IN = 1 / 2.54;
@@ -68,6 +123,17 @@ function defaultLayerBFs(ply) {
 }
 
 const BF_OPTIONS = ["16", "18", "20", "22", "24"];
+const GSM_OPTIONS = ["120", "130", "150", "180"]; // fixed options for the customer-facing GSM dropdown
+const UNIT_TO_CM = { cm: 1, mm: 0.1, in: 2.54 };
+const UNIT_LABELS = { cm: "cm", mm: "mm", in: "inches" };
+const HIGHEST_GSM = "180";
+const HIGHEST_BF = "24";
+function highestLayerGsms(ply) {
+  return layerTypesForPly(ply).map(() => HIGHEST_GSM);
+}
+function highestLayerBFs(ply) {
+  return layerTypesForPly(ply).map(() => HIGHEST_BF);
+}
 
 const DEFAULT_BF_PRICES = {
   "16": "33",
@@ -101,6 +167,208 @@ const COST_FIELD_LABELS = [
   ["bundling", "Bundling"],
 ];
 
+const FONT_OPTIONS = [
+  { label: "IBM Plex Sans (default)", value: "'IBM Plex Sans', system-ui, sans-serif" },
+  { label: "IBM Plex Mono", value: "'IBM Plex Mono', monospace" },
+  { label: "Georgia", value: "Georgia, serif" },
+  { label: "Arial", value: "Arial, sans-serif" },
+  { label: "Verdana", value: "Verdana, sans-serif" },
+  { label: "Trebuchet MS", value: "'Trebuchet MS', sans-serif" },
+  { label: "Courier New", value: "'Courier New', monospace" },
+];
+
+const PREMIUM_STYLES = `
+        * { box-sizing: border-box; }
+        .cs-root {
+          background: #FAFAFA;
+          min-height: 100vh;
+          font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'IBM Plex Sans', system-ui, sans-serif;
+          color: #1B2A4A;
+        }
+        .cs-header {
+          max-width: 1040px; margin: 0 auto; padding: 22px 24px 0;
+          display: flex; align-items: center; justify-content: space-between;
+        }
+        .cs-header-brand { display: flex; align-items: center; gap: 10px; }
+        .cs-header-brand img, .cs-header-brand svg { display: block; }
+        .cs-staff-link {
+          border: none; background: transparent; color: #9AA3B8; font-size: 13px;
+          cursor: pointer; padding: 6px 10px; font-family: inherit;
+          transition: color 0.15s;
+        }
+        .cs-staff-link:hover { color: #1B2A4A; }
+        .cs-hero { max-width: 720px; margin: 0 auto; padding: 56px 24px 36px; text-align: center; }
+        .cs-eyebrow {
+          font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+          color: #9AA3B8; font-weight: 600; margin-bottom: 14px;
+        }
+        .cs-hero h1 {
+          font-size: clamp(30px, 4.4vw, 44px); font-weight: 700; letter-spacing: -0.02em;
+          margin: 0 0 12px; line-height: 1.08;
+        }
+        .cs-hero p { font-size: 16.5px; color: #6B7280; margin: 0; line-height: 1.5; }
+        .cs-content {
+          max-width: 1040px; margin: 0 auto; padding: 8px 24px 90px;
+          display: grid; grid-template-columns: 1fr 380px; gap: 28px; align-items: start;
+        }
+        .cs-section {
+          background: #fff; border-radius: 22px; padding: 30px 32px; margin-bottom: 22px;
+          box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 10px 28px rgba(16,24,40,0.045);
+          opacity: 0; transform: translateY(18px);
+          transition: opacity 0.65s cubic-bezier(0.16,1,0.3,1), transform 0.65s cubic-bezier(0.16,1,0.3,1);
+        }
+        .cs-section.cs-visible { opacity: 1; transform: translateY(0); }
+        .cs-section h2 { font-size: 19px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
+        .cs-section .cs-sub { font-size: 13px; color: #9AA3B8; margin: 0 0 22px; }
+        .cs-field { margin-bottom: 16px; }
+        .cs-field-row { display: flex; gap: 14px; }
+        .cs-field-row > * { flex: 1; }
+        .cs-label { display: block; font-size: 12.5px; color: #6B7280; margin-bottom: 6px; font-weight: 500; }
+        .cs-input, .cs-select {
+          width: 100%; padding: 12px 14px; border-radius: 12px; border: 1.5px solid #ECEDF0;
+          background: #FBFBFC; font-size: 15px; font-family: inherit; color: #1B2A4A;
+          transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+        }
+        .cs-input:focus, .cs-select:focus {
+          outline: none; border-color: #1B2A4A; box-shadow: 0 0 0 4px rgba(27,42,74,0.07); background: #fff;
+        }
+        .cs-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .cs-row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+        .cs-note {
+          font-size: 12.5px; color: #9AA3B8; margin: -6px 0 18px; font-style: italic; line-height: 1.5;
+        }
+        .cs-toggle {
+          border: none; background: #FAFAFA; color: #1B2A4A; font-weight: 600; font-size: 13.5px;
+          cursor: pointer; padding: 12px 16px; border-radius: 12px; width: 100%;
+          display: flex; align-items: center; justify-content: space-between; margin-top: 6px;
+          transition: background 0.15s;
+        }
+        .cs-toggle:hover { background: #F2F3F5; }
+        .cs-chevron { transition: transform 0.3s cubic-bezier(0.4,0,0.2,1); display: inline-block; }
+        .cs-chevron.cs-open { transform: rotate(180deg); }
+        .cs-advanced { max-height: 0; overflow: hidden; transition: max-height 0.45s cubic-bezier(0.4,0,0.2,1); }
+        .cs-advanced.cs-open { max-height: 1200px; }
+        .cs-advanced-inner { padding-top: 18px; }
+        .cs-diagram-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 4px; }
+        .cs-diagram-card {
+          background: #F4F5F7; border-radius: 16px; padding: 18px 14px; text-align: center;
+          animation: cs-fade-in 0.5s cubic-bezier(0.16,1,0.3,1);
+        }
+        @keyframes cs-fade-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+        .cs-diagram-caption { font-size: 11.5px; color: #6B7280; margin-top: 8px; font-weight: 600; }
+        .cs-diagram-hint { font-size: 10.5px; color: #B0B6C2; margin-top: 3px; font-style: italic; }
+        .cs-summary {
+          position: sticky; top: 24px; background: #1B2A4A; color: #fff;
+          border-radius: 26px; padding: 34px 28px;
+          opacity: 0; transform: translateY(18px);
+          transition: opacity 0.65s cubic-bezier(0.16,1,0.3,1) 0.1s, transform 0.65s cubic-bezier(0.16,1,0.3,1) 0.1s;
+        }
+        .cs-summary.cs-visible { opacity: 1; transform: translateY(0); }
+        .cs-summary-eyebrow {
+          font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+          color: rgba(255,255,255,0.5); margin-bottom: 8px; font-weight: 600;
+        }
+        .cs-summary-big {
+          font-size: 46px; font-weight: 700; letter-spacing: -0.02em;
+          font-family: 'IBM Plex Mono', monospace; margin: 0 0 26px; line-height: 1;
+        }
+        .cs-summary-row {
+          display: flex; justify-content: space-between; align-items: baseline;
+          padding: 13px 0; border-top: 1px solid rgba(255,255,255,0.12); font-size: 14px;
+        }
+        .cs-summary-row:first-of-type { border-top: none; padding-top: 0; }
+        .cs-summary-row span:first-child { color: rgba(255,255,255,0.6); }
+        .cs-summary-row span:last-child { font-family: 'IBM Plex Mono', monospace; font-weight: 600; }
+        .cs-gst-note {
+          font-size: 11.5px; color: rgba(255,255,255,0.5); line-height: 1.5;
+          margin-top: -4px; margin-bottom: 4px; font-style: italic;
+        }
+        .cs-size-warning {
+          background: rgba(230,168,60,0.16); border: 1px solid rgba(230,168,60,0.4);
+          color: #F0C878; font-size: 12px; line-height: 1.6; border-radius: 12px;
+          padding: 12px 14px; margin-top: 14px;
+        }
+        .cs-btn-primary {
+          width: 100%; background: #fff; color: #1B2A4A; border: none; border-radius: 14px;
+          padding: 16px; font-size: 15px; font-weight: 700; cursor: pointer; margin-top: 24px;
+          font-family: inherit; transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .cs-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(0,0,0,0.18); }
+        .cs-btn-primary:active { transform: translateY(0); }
+        .cs-btn-primary:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+        .cs-input:focus-visible, .cs-select:focus-visible, .cs-toggle:focus-visible { outline: 2px solid #1B2A4A; outline-offset: 1px; }
+        .cs-confirm-wrap { max-width: 560px; margin: 60px auto; padding: 0 24px; }
+        .cs-confirm-card {
+          background: #fff; border-radius: 26px; padding: 44px 36px;
+          box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 14px 34px rgba(16,24,40,0.06);
+        }
+        .cs-check {
+          width: 56px; height: 56px; border-radius: 50%; background: #1B2A4A; color: #fff;
+          display: flex; align-items: center; justify-content: center; font-size: 26px;
+          margin: 0 auto 18px; animation: cs-pop 0.5s cubic-bezier(0.34,1.56,0.64,1);
+        }
+        @keyframes cs-pop { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        .cs-order-num {
+          font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 700;
+          color: #1B2A4A; text-align: center; margin: 4px 0 26px; letter-spacing: 0.01em;
+        }
+        @media (max-width: 860px) {
+          .cs-content { grid-template-columns: 1fr; }
+          .cs-summary { position: static; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .cs-section, .cs-summary { transition: none !important; opacity: 1 !important; transform: none !important; }
+          .cs-advanced, .cs-chevron { transition: none !important; }
+          .cs-check { animation: none !important; }
+          .cs-diagram-card { animation: none !important; }
+        }
+        .cs-login-wrap { max-width: 420px; margin: 0 auto; padding: 90px 24px; }
+        .cs-login-card {
+          background: #fff; border-radius: 26px; padding: 42px 36px;
+          box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 14px 34px rgba(16,24,40,0.06);
+          opacity: 0; transform: translateY(14px);
+          animation: cs-login-in 0.5s cubic-bezier(0.16,1,0.3,1) forwards;
+        }
+        @keyframes cs-login-in { to { opacity: 1; transform: translateY(0); } }
+        .cs-login-icon {
+          width: 52px; height: 52px; border-radius: 16px; background: #1B2A4A; color: #fff;
+          display: flex; align-items: center; justify-content: center; font-size: 22px; margin: 0 auto 18px;
+        }
+        .cs-login-title { font-size: 20px; font-weight: 700; text-align: center; margin-bottom: 4px; letter-spacing: -0.01em; }
+        .cs-login-sub { font-size: 13.5px; color: #9AA3B8; text-align: center; margin-bottom: 28px; }
+        .cs-login-error {
+          background: #FDECEC; color: #B23B3B; font-size: 13px; padding: 10px 14px;
+          border-radius: 10px; margin-bottom: 16px; text-align: center;
+        }
+        .cs-login-cancel {
+          width: 100%; background: transparent; color: #9AA3B8; border: none;
+          font-size: 13.5px; cursor: pointer; margin-top: 12px; padding: 8px; font-family: inherit;
+        }
+        .cs-login-cancel:hover { color: #1B2A4A; }
+        @media (prefers-reduced-motion: reduce) {
+          .cs-login-card { animation: none !important; opacity: 1 !important; transform: none !important; }
+        }
+`;
+
+
+const FACTORY_AUTH = {
+  username: "admin",
+  password: "ambicraft2026",
+};
+
+const FACTORY_BRANDING = {
+  heading: "Ambicraft EDGE",
+  subheading: "Get a Box Quote",
+  eyebrow: "Instant Estimate",
+  heroText: "Enter your box details below and see your price update in real time.",
+  staffLoginLabel: "Employee Portal",
+  gstRate: "5",
+  fontFamily: FONT_OPTIONS[0].value,
+  color: "#1B2A4A",
+  fontSize: "20",
+  logoDataUrl: "",
+};
+
 const FACTORY_DEFAULTS = {
   joint: "3.5",
   reelTrim: "2",
@@ -119,12 +387,23 @@ const FACTORY_DEFAULTS = {
   bfPrices: { ...DEFAULT_BF_PRICES },
   weightAddition: "15",
   costComponents: { ...DEFAULT_COST_COMPONENTS },
+  qtySlabs: [
+    { min: "1", max: "50", extra: "20" },
+    { min: "51", max: "100", extra: "10" },
+    { min: "101", max: "500", extra: "5" },
+    { min: "501", max: "", extra: "0" },
+  ],
+  maxReelSize: "",
+  maxCuttingSize: "",
 };
 
 function buildEmptyForm(defaults, ply) {
   const p = ply || "3";
   return {
     customerName: "",
+    phone: "",
+    email: "",
+    orderNumber: "",
     itemName: "",
     qty: "",
     L: "30",
@@ -152,6 +431,110 @@ function fmt(n) {
   return (Math.round(n * 100) / 100).toString();
 }
 
+function generateOrderNumber() {
+  const now = new Date();
+  const y = now.getFullYear().toString().slice(-2);
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `AMB-${y}${m}${d}-${rand}`;
+}
+
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+// Animates a displayed number smoothly toward `value`; snaps instantly if the
+// person has requested reduced motion.
+function useCountUp(value, duration = 500) {
+  const [display, setDisplay] = useState(value);
+  const prevRef = useRef(value);
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      setDisplay(value);
+      prevRef.current = value;
+      return;
+    }
+    const start = prevRef.current;
+    const end = value;
+    if (start === end) return;
+    const startTime = performance.now();
+    let raf;
+    function tick(now) {
+      const t = Math.min(1, (now - startTime) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(start + (end - start) * eased);
+      if (t < 1) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        prevRef.current = end;
+      }
+    }
+    raf = requestAnimationFrame(tick);
+    return () => raf && cancelAnimationFrame(raf);
+  }, [value, duration]);
+  return display;
+}
+
+// Returns a ref to attach to a section and whether it has scrolled into view,
+// for a gentle fade/slide-in reveal. Reveals immediately if motion is reduced.
+function useReveal() {
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(prefersReducedMotion());
+  useEffect(() => {
+    if (prefersReducedMotion()) return;
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          obs.disconnect();
+        }
+      },
+      { threshold: 0.12 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+  return [ref, visible];
+}
+
+// Generates a sensible spread of dropdown options centered on the current value,
+// always including the current value itself so nothing already set is ever lost.
+function costOptionsAround(value) {
+  const base = parseFloat(value);
+  const b = isNaN(base) || base <= 0 ? 1 : base;
+  const multipliers = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 2];
+  const raw = multipliers.map((m) => Math.round(b * m * 100) / 100);
+  if (!isNaN(base) && base > 0 && !raw.includes(Math.round(base * 100) / 100)) {
+    raw.push(Math.round(base * 100) / 100);
+  }
+  const unique = Array.from(new Set(raw)).sort((a, b2) => a - b2);
+  return unique.map((n) => n.toString());
+}
+
+// Finds the ₹/box additional charge for the matching quantity slab.
+// Min and Max are both inclusive; a blank Max means "and above". Returns 0
+// if no slab matches (e.g. quantity is blank/zero, or slabs are empty).
+function findQtySlabExtra(qtySlabs, qty) {
+  if (!qtySlabs || !qty || qty <= 0) return 0;
+  for (const slab of qtySlabs) {
+    const min = parseFloat(slab.min);
+    const maxRaw = slab.max;
+    const max = maxRaw === "" || maxRaw === undefined || maxRaw === null ? Infinity : parseFloat(maxRaw);
+    if (isNaN(min)) continue;
+    if (qty >= min && qty <= (isNaN(max) ? Infinity : max)) {
+      const extra = parseFloat(slab.extra);
+      return isNaN(extra) ? 0 : extra;
+    }
+  }
+  return 0;
+}
+
 function computeReelSize(n, H, W, flap, reelTrim) {
   return n * (H + W + flap) + reelTrim;
 }
@@ -172,10 +555,23 @@ function StaffApp({ onExit }) {
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [costsOpen, setCostsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmDeleteSub, setConfirmDeleteSub] = useState(null);
   const [editingDefaults, setEditingDefaults] = useState(false);
+  const [defaultsCostsOpen, setDefaultsCostsOpen] = useState(false);
   const [draftDefaults, setDraftDefaults] = useState(FACTORY_DEFAULTS);
+  const [customerDefaults, setCustomerDefaults] = useState(FACTORY_DEFAULTS);
+  const [editingCustomerDefaults, setEditingCustomerDefaults] = useState(false);
+  const [customerDefaultsCostsOpen, setCustomerDefaultsCostsOpen] = useState(false);
+  const [draftCustomerDefaults, setDraftCustomerDefaults] = useState(FACTORY_DEFAULTS);
+  const [branding, setBranding] = useState(FACTORY_BRANDING);
+  const [draftBranding, setDraftBranding] = useState(FACTORY_BRANDING);
+  const [editingBranding, setEditingBranding] = useState(false);
+  const [authSettings, setAuthSettings] = useState(FACTORY_AUTH);
+  const [draftAuthSettings, setDraftAuthSettings] = useState(FACTORY_AUTH);
+  const [editingAuth, setEditingAuth] = useState(false);
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
 
   // Load Google Fonts
   useEffect(() => {
@@ -192,6 +588,7 @@ function StaffApp({ onExit }) {
   // Load saved defaults from storage
   useEffect(() => {
     (async () => {
+      let resolvedStaffDefaults = FACTORY_DEFAULTS;
       try {
         const res = await localGet("defaults");
         if (res && res.value) {
@@ -205,12 +602,79 @@ function StaffApp({ onExit }) {
             bfPrices: { ...FACTORY_DEFAULTS.bfPrices, ...(saved.bfPrices || {}) },
             costComponents: { ...FACTORY_DEFAULTS.costComponents, ...(saved.costComponents || {}) },
           };
+          resolvedStaffDefaults = merged;
           setDefaults(merged);
           setDraftDefaults(merged);
           setForm(buildEmptyForm(merged, "3"));
         }
       } catch (e) {
         // no saved defaults yet, factory defaults already in place
+      }
+
+      // Load (or seed) separate customer-facing defaults
+      try {
+        const res = await localGet("customerDefaults");
+        if (res && res.value) {
+          const saved = JSON.parse(res.value);
+          const merged = {
+            ...FACTORY_DEFAULTS,
+            ...saved,
+            flapByPly: { ...FACTORY_DEFAULTS.flapByPly, ...(saved.flapByPly || {}) },
+            layerGsmsByPly: { ...FACTORY_DEFAULTS.layerGsmsByPly, ...(saved.layerGsmsByPly || {}) },
+            layerBFsByPly: { ...FACTORY_DEFAULTS.layerBFsByPly, ...(saved.layerBFsByPly || {}) },
+            bfPrices: { ...FACTORY_DEFAULTS.bfPrices, ...(saved.bfPrices || {}) },
+            costComponents: { ...FACTORY_DEFAULTS.costComponents, ...(saved.costComponents || {}) },
+          };
+          setCustomerDefaults(merged);
+          setDraftCustomerDefaults(merged);
+        } else {
+          // No customer defaults saved yet — seed from current staff defaults
+          setCustomerDefaults(resolvedStaffDefaults);
+          setDraftCustomerDefaults(resolvedStaffDefaults);
+          try {
+            await localSet("customerDefaults", JSON.stringify(resolvedStaffDefaults));
+          } catch (e) {
+            // will retry seeding next load if this fails
+          }
+        }
+      } catch (e) {
+        // fall back to staff defaults as a starting point
+        setCustomerDefaults(resolvedStaffDefaults);
+        setDraftCustomerDefaults(resolvedStaffDefaults);
+      }
+    })();
+  }, []);
+
+  // Load branding settings
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localGet("branding");
+        if (res && res.value) {
+          const saved = JSON.parse(res.value);
+          const merged = { ...FACTORY_BRANDING, ...saved };
+          setBranding(merged);
+          setDraftBranding(merged);
+        }
+      } catch (e) {
+        // no saved branding yet, factory defaults already in place
+      }
+    })();
+  }, []);
+
+  // Load employee login credentials
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localGet("authSettings");
+        if (res && res.value) {
+          const saved = JSON.parse(res.value);
+          const merged = { ...FACTORY_AUTH, ...saved };
+          setAuthSettings(merged);
+          setDraftAuthSettings(merged);
+        }
+      } catch (e) {
+        // no saved credentials yet, factory defaults already in place
       }
     })();
   }, []);
@@ -275,6 +739,9 @@ function StaffApp({ onExit }) {
     setForm((f) => ({
       ...buildEmptyForm(defaults, s.ply),
       customerName: s.customerName,
+      phone: s.phone || "",
+      email: s.email || "",
+      orderNumber: s.orderNumber || "",
       itemName: s.itemName,
       qty: String(s.qty),
       L: String(s.L),
@@ -420,6 +887,172 @@ function StaffApp({ onExit }) {
     setDraftDefaults(JSON.parse(JSON.stringify(FACTORY_DEFAULTS)));
   }
 
+  // ---- Customer Defaults editing (separate from staff defaults) ----
+  function startEditingCustomerDefaults() {
+    setDraftCustomerDefaults(JSON.parse(JSON.stringify(customerDefaults)));
+    setEditingCustomerDefaults(true);
+  }
+
+  function cancelEditingCustomerDefaults() {
+    setDraftCustomerDefaults(customerDefaults);
+    setEditingCustomerDefaults(false);
+  }
+
+  function updateCustomerDraftField(key, value) {
+    setDraftCustomerDefaults((d) => ({ ...d, [key]: value }));
+  }
+
+  function updateCustomerDraftFlap(ply, value) {
+    setDraftCustomerDefaults((d) => ({ ...d, flapByPly: { ...d.flapByPly, [ply]: value } }));
+  }
+
+  function updateCustomerDraftLayerGsm(ply, index, value) {
+    setDraftCustomerDefaults((d) => {
+      const arr = [...(d.layerGsmsByPly[ply] || defaultLayerGsms(ply))];
+      arr[index] = value;
+      return { ...d, layerGsmsByPly: { ...d.layerGsmsByPly, [ply]: arr } };
+    });
+  }
+
+  function updateCustomerDraftLayerBF(ply, index, value) {
+    setDraftCustomerDefaults((d) => {
+      const arr = [...(d.layerBFsByPly[ply] || defaultLayerBFs(ply))];
+      arr[index] = value;
+      return { ...d, layerBFsByPly: { ...d.layerBFsByPly, [ply]: arr } };
+    });
+  }
+
+  function updateCustomerDraftBfPrice(bf, value) {
+    setDraftCustomerDefaults((d) => ({ ...d, bfPrices: { ...d.bfPrices, [bf]: value } }));
+  }
+
+  function updateCustomerDraftCost(key, value) {
+    setDraftCustomerDefaults((d) => ({ ...d, costComponents: { ...d.costComponents, [key]: value } }));
+  }
+
+  async function saveCustomerDefaults() {
+    setCustomerDefaults(draftCustomerDefaults);
+    setEditingCustomerDefaults(false);
+    try {
+      await localSet("customerDefaults", JSON.stringify(draftCustomerDefaults));
+      showToast("success", "Customer defaults saved — the customer page will use these");
+    } catch (e) {
+      console.error("Failed to save customer defaults", e);
+      showToast("error", "Could not save customer defaults — try again");
+    }
+  }
+
+  function copyStaffDefaultsToCustomer() {
+    setDraftCustomerDefaults(JSON.parse(JSON.stringify(defaults)));
+  }
+
+  function restoreCustomerFactoryDefaults() {
+    setDraftCustomerDefaults(JSON.parse(JSON.stringify(FACTORY_DEFAULTS)));
+  }
+
+  function updateCustomerSlab(index, field, value) {
+    setDraftCustomerDefaults((d) => {
+      const slabs = [...(d.qtySlabs || [])];
+      slabs[index] = { ...slabs[index], [field]: value };
+      return { ...d, qtySlabs: slabs };
+    });
+  }
+
+  function addCustomerSlab() {
+    setDraftCustomerDefaults((d) => ({
+      ...d,
+      qtySlabs: [...(d.qtySlabs || []), { min: "", max: "", extra: "0" }],
+    }));
+  }
+
+  function removeCustomerSlab(index) {
+    setDraftCustomerDefaults((d) => ({
+      ...d,
+      qtySlabs: (d.qtySlabs || []).filter((_, i) => i !== index),
+    }));
+  }
+
+  // ---- Branding editing ----
+  function startEditingBranding() {
+    setDraftBranding(JSON.parse(JSON.stringify(branding)));
+    setEditingBranding(true);
+  }
+
+  function cancelEditingBranding() {
+    setDraftBranding(branding);
+    setEditingBranding(false);
+  }
+
+  function updateBrandingField(key, value) {
+    setDraftBranding((b) => ({ ...b, [key]: value }));
+  }
+
+  function handleLogoUpload(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.size > 600 * 1024) {
+      showToast("error", "Image too large — please use a file under ~600KB (a simple logo, not a large photo)");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setDraftBranding((b) => ({ ...b, logoDataUrl: reader.result }));
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function removeLogo() {
+    setDraftBranding((b) => ({ ...b, logoDataUrl: "" }));
+  }
+
+  async function saveBranding() {
+    setBranding(draftBranding);
+    setEditingBranding(false);
+    try {
+      await localSet("branding", JSON.stringify(draftBranding));
+      showToast("success", "Branding saved — the customer page will use these");
+    } catch (e) {
+      console.error("Failed to save branding", e);
+      showToast("error", "Could not save branding — try again");
+    }
+  }
+
+  function restoreFactoryBranding() {
+    setDraftBranding(JSON.parse(JSON.stringify(FACTORY_BRANDING)));
+  }
+
+  // ---- Employee login credentials editing ----
+  function startEditingAuth() {
+    setDraftAuthSettings({ ...authSettings });
+    setEditingAuth(true);
+  }
+
+  function cancelEditingAuth() {
+    setDraftAuthSettings(authSettings);
+    setEditingAuth(false);
+  }
+
+  function updateAuthField(key, value) {
+    setDraftAuthSettings((a) => ({ ...a, [key]: value }));
+  }
+
+  async function saveAuthSettings() {
+    if (!draftAuthSettings.username.trim() || !draftAuthSettings.password) {
+      showToast("error", "Username and password can't be empty");
+      return;
+    }
+    const cleaned = { username: draftAuthSettings.username.trim(), password: draftAuthSettings.password };
+    setAuthSettings(cleaned);
+    setEditingAuth(false);
+    try {
+      await localSet("authSettings", JSON.stringify(cleaned));
+      showToast("success", "Login credentials updated");
+    } catch (e) {
+      console.error("Failed to save auth settings", e);
+      showToast("error", "Could not save credentials — try again");
+    }
+  }
+
   const L = num(form.L),
     W = num(form.W),
     H = num(form.H),
@@ -502,7 +1135,10 @@ function StaffApp({ onExit }) {
     }
     const record = {
       id: editingId || `ord_${Date.now()}`,
+      orderNumber: (form.orderNumber || "").trim(),
       customerName: form.customerName.trim(),
+      phone: (form.phone || "").trim(),
+      email: (form.email || "").trim(),
       itemName: form.itemName.trim(),
       qty: num(form.qty),
       L, W, H,
@@ -544,6 +1180,9 @@ function StaffApp({ onExit }) {
   function editOrder(o) {
     setForm({
       customerName: o.customerName,
+      phone: o.phone || "",
+      email: o.email || "",
+      orderNumber: o.orderNumber || "",
       itemName: o.itemName,
       qty: String(o.qty),
       L: String(o.L),
@@ -654,6 +1293,20 @@ function StaffApp({ onExit }) {
             >
               Defaults
             </button>
+            <button
+              className="bc-btn"
+              style={{ ...styles.tabBtn, ...(tab === "customerDefaults" ? styles.tabBtnActive : {}) }}
+              onClick={() => setTab("customerDefaults")}
+            >
+              Customer Defaults
+            </button>
+            <button
+              className="bc-btn"
+              style={{ ...styles.tabBtn, ...(tab === "branding" ? styles.tabBtnActive : {}) }}
+              onClick={() => setTab("branding")}
+            >
+              Branding
+            </button>
           </nav>
           <button className="bc-btn" style={styles.logoutBtn} onClick={onExit}>Log out</button>
         </div>
@@ -671,10 +1324,24 @@ function StaffApp({ onExit }) {
             {/* LEFT: form */}
             <div style={styles.panel}>
               <div style={styles.panelLabel}>ORDER DETAILS</div>
+              <Field label="Order number (optional)">
+                <input className="bc-input" style={styles.input} value={form.orderNumber}
+                  onChange={(e) => updateField("orderNumber", e.target.value)} placeholder="e.g. AMB-260722-1234" />
+              </Field>
               <Field label="Customer name">
                 <input className="bc-input" style={styles.input} value={form.customerName}
                   onChange={(e) => updateField("customerName", e.target.value)} placeholder="e.g. Sunrise Traders" />
               </Field>
+              <div style={styles.dimRow2}>
+                <Field label="Phone number">
+                  <input className="bc-input" style={styles.inputSm} type="tel" value={form.phone}
+                    onChange={(e) => updateField("phone", e.target.value)} placeholder="e.g. 98765 43210" />
+                </Field>
+                <Field label="Email ID">
+                  <input className="bc-input" style={styles.inputSm} type="email" value={form.email}
+                    onChange={(e) => updateField("email", e.target.value)} placeholder="e.g. you@company.com" />
+                </Field>
+              </div>
               <Field label="Item name">
                 <input className="bc-input" style={styles.input} value={form.itemName}
                   onChange={(e) => updateField("itemName", e.target.value)} placeholder="e.g. Mango box 5kg" />
@@ -748,31 +1415,37 @@ function StaffApp({ onExit }) {
               </Field>
 
               <div style={styles.divider} />
-              <div style={styles.panelLabel}>OTHER PROCESS COSTS (₹ per kg) — paper priced separately below by BF</div>
-              <div style={styles.dimRow}>
-                {COST_FIELD_LABELS.slice(0, 3).map(([key, label]) => (
-                  <Field key={key} label={label}>
-                    <input className="bc-input" style={styles.inputSm} type="number" value={form.costComponents[key]}
-                      onChange={(e) => updateCostField(key, e.target.value)} />
-                  </Field>
-                ))}
-              </div>
-              <div style={styles.dimRow}>
-                {COST_FIELD_LABELS.slice(3, 6).map(([key, label]) => (
-                  <Field key={key} label={label}>
-                    <input className="bc-input" style={styles.inputSm} type="number" value={form.costComponents[key]}
-                      onChange={(e) => updateCostField(key, e.target.value)} />
-                  </Field>
-                ))}
-              </div>
-              <div style={styles.dimRow}>
-                {COST_FIELD_LABELS.slice(6, 9).map(([key, label]) => (
-                  <Field key={key} label={label}>
-                    <input className="bc-input" style={styles.inputSm} type="number" value={form.costComponents[key]}
-                      onChange={(e) => updateCostField(key, e.target.value)} />
-                  </Field>
-                ))}
-              </div>
+              <button className="bc-btn" style={styles.advToggle} onClick={() => setCostsOpen((v) => !v)}>
+                {costsOpen ? "▾" : "▸"} Other Process Costs (₹ per kg) — paper priced separately above by BF
+              </button>
+              {costsOpen && (
+                <div style={styles.advBox}>
+                  <div style={styles.dimRow}>
+                    {COST_FIELD_LABELS.slice(0, 3).map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        <input className="bc-input" style={styles.inputSm} type="number" value={form.costComponents[key]}
+                          onChange={(e) => updateCostField(key, e.target.value)} />
+                      </Field>
+                    ))}
+                  </div>
+                  <div style={styles.dimRow}>
+                    {COST_FIELD_LABELS.slice(3, 6).map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        <input className="bc-input" style={styles.inputSm} type="number" value={form.costComponents[key]}
+                          onChange={(e) => updateCostField(key, e.target.value)} />
+                      </Field>
+                    ))}
+                  </div>
+                  <div style={styles.dimRow}>
+                    {COST_FIELD_LABELS.slice(6, 9).map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        <input className="bc-input" style={styles.inputSm} type="number" value={form.costComponents[key]}
+                          onChange={(e) => updateCostField(key, e.target.value)} />
+                      </Field>
+                    ))}
+                  </div>
+                </div>
+              )}
               <Field label="Total process cost/kg (auto)">
                 <input className="bc-input" style={{ ...styles.inputSm, background: "#F0EEE6", fontWeight: 700 }} value={fmt(otherCostPerKg)} readOnly />
               </Field>
@@ -923,10 +1596,13 @@ function StaffApp({ onExit }) {
                   <thead>
                     <tr>
                       <th style={styles.th}>Customer</th>
+                      <th style={styles.th}>Phone</th>
+                      <th style={styles.th}>Email</th>
                       <th style={styles.th}>Item</th>
                       <th style={styles.th}>L×W×H</th>
                       <th style={styles.th}>Ply</th>
                       <th style={styles.th}>Qty</th>
+                      <th style={styles.th}>Order Number</th>
                       <th style={styles.th}>N-up</th>
                       <th style={styles.th}>Reel size</th>
                       <th style={styles.th}>Cutting size</th>
@@ -942,10 +1618,13 @@ function StaffApp({ onExit }) {
                     {filteredOrders.map((o) => (
                       <tr key={o.id} className="bc-row">
                         <td style={styles.td}>{o.customerName}</td>
+                        <td style={styles.td}>{o.phone || "—"}</td>
+                        <td style={styles.td}>{o.email || "—"}</td>
                         <td style={styles.td}>{o.itemName}</td>
                         <td style={styles.td}>{o.L}×{o.W}×{o.H}</td>
                         <td style={styles.td}>{o.ply}-ply</td>
                         <td style={styles.td}>{o.qty}</td>
+                        <td style={styles.tdMono}>{o.orderNumber || "—"}</td>
                         <td style={styles.td}>{o.nUp}</td>
                         <td style={styles.tdMono}>{fmt(o.reelSizeCm)} cm</td>
                         <td style={styles.tdMono}>{fmt(o.cuttingSizeCm)} cm</td>
@@ -987,10 +1666,14 @@ function StaffApp({ onExit }) {
                   <thead>
                     <tr>
                       <th style={styles.th}>Customer</th>
+                      <th style={styles.th}>Phone</th>
+                      <th style={styles.th}>Email</th>
                       <th style={styles.th}>Item</th>
                       <th style={styles.th}>L×W×H</th>
                       <th style={styles.th}>Ply</th>
                       <th style={styles.th}>Qty</th>
+                      <th style={styles.th}>Order Number</th>
+                      <th style={styles.th}>Flag</th>
                       <th style={styles.th}>Cost/box</th>
                       <th style={styles.th}>Total cost</th>
                       <th style={styles.th}>Submitted</th>
@@ -1001,10 +1684,18 @@ function StaffApp({ onExit }) {
                     {customerSubmissions.map((s) => (
                       <tr key={s.id} className="bc-row">
                         <td style={styles.td}>{s.customerName}</td>
+                        <td style={styles.td}>{s.phone || "—"}</td>
+                        <td style={styles.td}>{s.email || "—"}</td>
                         <td style={styles.td}>{s.itemName}</td>
                         <td style={styles.td}>{s.L}×{s.W}×{s.H}</td>
                         <td style={styles.td}>{s.ply}-ply</td>
                         <td style={styles.td}>{s.qty}</td>
+                        <td style={styles.tdMono}>{s.orderNumber || "—"}</td>
+                        <td style={styles.td}>
+                          {s.sizeExceedsLimit ? (
+                            <span style={{ color: "#B8860B", fontWeight: 700, fontSize: 12 }}>⚠ Review size</span>
+                          ) : "—"}
+                        </td>
                         <td style={styles.tdMono}>₹{fmt(s.costPerBox)}</td>
                         <td style={styles.tdMono}>₹{fmt(s.totalCost)}</td>
                         <td style={styles.td}>{new Date(s.date).toLocaleDateString()}</td>
@@ -1144,19 +1835,25 @@ function StaffApp({ onExit }) {
             })}
 
             <div style={styles.divider} />
-            <div style={styles.panelLabel}>OTHER PROCESS COSTS (₹ per kg) — paper priced separately by BF above</div>
-            <div className="bc-grid" style={styles.grid}>
-              {COST_FIELD_LABELS.map(([key, label]) => (
-                <Field key={key} label={label}>
-                  {editingDefaults ? (
-                    <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.costComponents[key]}
-                      onChange={(e) => updateDraftCost(key, e.target.value)} />
-                  ) : (
-                    <div style={styles.readOnlyVal}>₹{defaults.costComponents[key]}</div>
-                  )}
-                </Field>
-              ))}
-            </div>
+            <button className="bc-btn" style={styles.advToggle} onClick={() => setDefaultsCostsOpen((v) => !v)}>
+              {defaultsCostsOpen ? "▾" : "▸"} Other Process Costs (₹ per kg) — paper priced separately by BF above
+            </button>
+            {defaultsCostsOpen && (
+              <div style={styles.advBox}>
+                <div className="bc-grid" style={styles.grid}>
+                  {COST_FIELD_LABELS.map(([key, label]) => (
+                    <Field key={key} label={label}>
+                      {editingDefaults ? (
+                        <input className="bc-input" style={styles.inputSm} type="number" value={draftDefaults.costComponents[key]}
+                          onChange={(e) => updateDraftCost(key, e.target.value)} />
+                      ) : (
+                        <div style={styles.readOnlyVal}>₹{defaults.costComponents[key]}</div>
+                      )}
+                    </Field>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {editingDefaults && (
               <>
@@ -1168,6 +1865,432 @@ function StaffApp({ onExit }) {
             )}
           </div>
         )}
+
+        {tab === "customerDefaults" && (
+          <div style={styles.panel}>
+            <div style={styles.ordersHeader}>
+              <div style={styles.panelLabel}>CUSTOMER PAGE DEFAULT PARAMETERS</div>
+              {!editingCustomerDefaults ? (
+                <button className="bc-btn" style={styles.primaryBtn2} onClick={startEditingCustomerDefaults}>Edit</button>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="bc-btn" style={styles.ghostBtn} onClick={cancelEditingCustomerDefaults}>Cancel</button>
+                  <button className="bc-btn" style={styles.primaryBtn2} onClick={saveCustomerDefaults}>Save</button>
+                </div>
+              )}
+            </div>
+            <p style={styles.defaultsHint}>
+              These values are separate from your staff Defaults tab — they only affect what pre-fills on the
+              public Customer quote page. Changing these has no effect on your internal Calculator or Orders.
+            </p>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>BOARD ALLOWANCES (cm)</div>
+            <div className="bc-grid" style={styles.grid}>
+              <Field label="Manufacturing joint">
+                {editingCustomerDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.joint}
+                    onChange={(e) => updateCustomerDraftField("joint", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{customerDefaults.joint} cm</div>
+                )}
+              </Field>
+              <Field label="Reel trim">
+                {editingCustomerDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.reelTrim}
+                    onChange={(e) => updateCustomerDraftField("reelTrim", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{customerDefaults.reelTrim} cm</div>
+                )}
+              </Field>
+              <Field label="Cutting trim">
+                {editingCustomerDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.cuttingTrim}
+                    onChange={(e) => updateCustomerDraftField("cuttingTrim", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{customerDefaults.cuttingTrim} cm</div>
+                )}
+              </Field>
+              <Field label="Weight addition (g)">
+                {editingCustomerDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.weightAddition}
+                    onChange={(e) => updateCustomerDraftField("weightAddition", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{customerDefaults.weightAddition} g</div>
+                )}
+              </Field>
+            </div>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>SIZE LIMITS (cm)</div>
+            <p style={styles.defaultsHint}>
+              If a customer's box requires a reel size or cutting size larger than these limits, their quote still goes
+              through, but is flagged as "subject to review" on both the customer page and in Customer Orders.
+              Leave blank for no limit.
+            </p>
+            <div className="bc-grid" style={styles.grid}>
+              <Field label="Max reel size">
+                {editingCustomerDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.maxReelSize}
+                    onChange={(e) => updateCustomerDraftField("maxReelSize", e.target.value)} placeholder="no limit" />
+                ) : (
+                  <div style={styles.readOnlyVal}>{customerDefaults.maxReelSize ? `${customerDefaults.maxReelSize} cm` : "No limit"}</div>
+                )}
+              </Field>
+              <Field label="Max cutting size">
+                {editingCustomerDefaults ? (
+                  <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.maxCuttingSize}
+                    onChange={(e) => updateCustomerDraftField("maxCuttingSize", e.target.value)} placeholder="no limit" />
+                ) : (
+                  <div style={styles.readOnlyVal}>{customerDefaults.maxCuttingSize ? `${customerDefaults.maxCuttingSize} cm` : "No limit"}</div>
+                )}
+              </Field>
+            </div>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>KRAFT PAPER PRICE BY BURST FACTOR (₹ per kg)</div>
+            <div className="bc-grid" style={styles.grid}>
+              {BF_OPTIONS.map((bf) => (
+                <Field key={bf} label={`${bf}BF`}>
+                  {editingCustomerDefaults ? (
+                    <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.bfPrices[bf]}
+                      onChange={(e) => updateCustomerDraftBfPrice(bf, e.target.value)} />
+                  ) : (
+                    <div style={styles.readOnlyVal}>₹{customerDefaults.bfPrices[bf]}</div>
+                  )}
+                </Field>
+              ))}
+            </div>
+
+            {["3", "5", "7"].map((ply) => {
+              const types = layerTypesForPly(ply);
+              const activeCustomerDefaults = editingCustomerDefaults ? draftCustomerDefaults : customerDefaults;
+              return (
+                <div key={ply}>
+                  <div style={styles.divider} />
+                  <div style={styles.panelLabel}>{ply}-PLY — FLAP BENDING &amp; GSM</div>
+                  <div className="bc-grid" style={styles.grid}>
+                    <Field label="Flap bending (cm)">
+                      {editingCustomerDefaults ? (
+                        <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.flapByPly[ply]}
+                          onChange={(e) => updateCustomerDraftFlap(ply, e.target.value)} />
+                      ) : (
+                        <div style={styles.readOnlyVal}>{customerDefaults.flapByPly[ply]} cm</div>
+                      )}
+                    </Field>
+                    {types.map((type, i) => (
+                      <Field key={i} label={`${layerLabel(type, i, types)} GSM`}>
+                        {editingCustomerDefaults ? (
+                          <input className="bc-input" style={styles.inputSm} type="number"
+                            value={(draftCustomerDefaults.layerGsmsByPly[ply] || [])[i] ?? ""}
+                            onChange={(e) => updateCustomerDraftLayerGsm(ply, i, e.target.value)} />
+                        ) : (
+                          <div style={styles.readOnlyVal}>{(activeCustomerDefaults.layerGsmsByPly[ply] || [])[i]}</div>
+                        )}
+                      </Field>
+                    ))}
+                    {types.map((type, i) => (
+                      <Field key={`bf-${i}`} label={`${layerLabel(type, i, types)} BF`}>
+                        {editingCustomerDefaults ? (
+                          <select className="bc-select" style={styles.inputSm}
+                            value={(draftCustomerDefaults.layerBFsByPly[ply] || [])[i] ?? "20"}
+                            onChange={(e) => updateCustomerDraftLayerBF(ply, i, e.target.value)}>
+                            {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
+                          </select>
+                        ) : (
+                          <div style={styles.readOnlyVal}>{(activeCustomerDefaults.layerBFsByPly[ply] || [])[i]}BF</div>
+                        )}
+                      </Field>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={styles.divider} />
+            <button className="bc-btn" style={styles.advToggle} onClick={() => setCustomerDefaultsCostsOpen((v) => !v)}>
+              {customerDefaultsCostsOpen ? "▾" : "▸"} Other Process Costs (₹ per kg) — paper priced separately by BF above
+            </button>
+            {customerDefaultsCostsOpen && (
+              <div style={styles.advBox}>
+                <div className="bc-grid" style={styles.grid}>
+                  {COST_FIELD_LABELS.map(([key, label]) => (
+                    <Field key={key} label={label}>
+                      {editingCustomerDefaults ? (
+                        <input className="bc-input" style={styles.inputSm} type="number" value={draftCustomerDefaults.costComponents[key]}
+                          onChange={(e) => updateCustomerDraftCost(key, e.target.value)} />
+                      ) : (
+                        <div style={styles.readOnlyVal}>₹{customerDefaults.costComponents[key]}</div>
+                      )}
+                    </Field>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>QUANTITY-BASED ADDITIONAL COST (customer page only)</div>
+            <p style={styles.defaultsHint}>
+              Adds an extra ₹ per box on top of the calculated cost, based on which range the customer's quantity falls into.
+              This only affects the Customer page — your staff Calculator cost is unaffected.
+            </p>
+            {((editingCustomerDefaults ? draftCustomerDefaults.qtySlabs : customerDefaults.qtySlabs) || []).map((slab, i) => (
+              <div key={i} style={{ ...styles.dimRow, gridTemplateColumns: "1fr 1fr 1fr auto", alignItems: "end", marginBottom: 10 }}>
+                <Field label="Min qty">
+                  {editingCustomerDefaults ? (
+                    <input className="bc-input" style={styles.inputSm} type="number" value={slab.min}
+                      onChange={(e) => updateCustomerSlab(i, "min", e.target.value)} />
+                  ) : (
+                    <div style={styles.readOnlyVal}>{slab.min}</div>
+                  )}
+                </Field>
+                <Field label="Max qty (blank = and above)">
+                  {editingCustomerDefaults ? (
+                    <input className="bc-input" style={styles.inputSm} type="number" value={slab.max}
+                      onChange={(e) => updateCustomerSlab(i, "max", e.target.value)} placeholder="and above" />
+                  ) : (
+                    <div style={styles.readOnlyVal}>{slab.max || "and above"}</div>
+                  )}
+                </Field>
+                <Field label="Extra ₹/box">
+                  {editingCustomerDefaults ? (
+                    <input className="bc-input" style={styles.inputSm} type="number" value={slab.extra}
+                      onChange={(e) => updateCustomerSlab(i, "extra", e.target.value)} />
+                  ) : (
+                    <div style={styles.readOnlyVal}>₹{slab.extra}</div>
+                  )}
+                </Field>
+                {editingCustomerDefaults && (
+                  <button className="bc-btn" style={styles.linkBtnDanger} onClick={() => removeCustomerSlab(i)}>Remove</button>
+                )}
+              </div>
+            ))}
+            {editingCustomerDefaults && (
+              <button className="bc-btn" style={styles.linkBtn} onClick={addCustomerSlab}>+ Add quantity range</button>
+            )}
+            {((editingCustomerDefaults ? draftCustomerDefaults.qtySlabs : customerDefaults.qtySlabs) || []).length === 0 && (
+              <div style={styles.defaultsHint}>No quantity ranges set — no additional cost will be applied.</div>
+            )}
+
+            {editingCustomerDefaults && (
+              <>
+                <div style={styles.divider} />
+                <div style={{ display: "flex", gap: 16 }}>
+                  <button className="bc-btn" style={styles.linkBtn} onClick={copyStaffDefaultsToCustomer}>
+                    Copy current staff defaults into this form
+                  </button>
+                  <button className="bc-btn" style={styles.linkBtn} onClick={restoreCustomerFactoryDefaults}>
+                    Reset this form to original factory numbers
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {tab === "branding" && (
+          <div style={styles.panel}>
+            <div style={styles.ordersHeader}>
+              <div style={styles.panelLabel}>CUSTOMER PAGE BRANDING</div>
+              {!editingBranding ? (
+                <button className="bc-btn" style={styles.primaryBtn2} onClick={startEditingBranding}>Edit</button>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="bc-btn" style={styles.ghostBtn} onClick={cancelEditingBranding}>Cancel</button>
+                  <button className="bc-btn" style={styles.primaryBtn2} onClick={saveBranding}>Save</button>
+                </div>
+              )}
+            </div>
+            <p style={styles.defaultsHint}>
+              These control the heading, subheading, and logo shown at the top of the public Customer page.
+              They have no effect on the staff area.
+            </p>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>TEXT</div>
+            <Field label="Main heading">
+              {editingBranding ? (
+                <input className="bc-input" style={styles.input} value={draftBranding.heading}
+                  onChange={(e) => updateBrandingField("heading", e.target.value)} />
+              ) : (
+                <div style={styles.readOnlyVal}>{branding.heading}</div>
+              )}
+            </Field>
+            <Field label="Subheading">
+              {editingBranding ? (
+                <input className="bc-input" style={styles.input} value={draftBranding.subheading}
+                  onChange={(e) => updateBrandingField("subheading", e.target.value)} />
+              ) : (
+                <div style={styles.readOnlyVal}>{branding.subheading}</div>
+              )}
+            </Field>
+            <Field label="Eyebrow label (small text above heading)">
+              {editingBranding ? (
+                <input className="bc-input" style={styles.input} value={draftBranding.eyebrow}
+                  onChange={(e) => updateBrandingField("eyebrow", e.target.value)} />
+              ) : (
+                <div style={styles.readOnlyVal}>{branding.eyebrow}</div>
+              )}
+            </Field>
+            <Field label="Hero description text">
+              {editingBranding ? (
+                <input className="bc-input" style={styles.input} value={draftBranding.heroText}
+                  onChange={(e) => updateBrandingField("heroText", e.target.value)} />
+              ) : (
+                <div style={styles.readOnlyVal}>{branding.heroText}</div>
+              )}
+            </Field>
+            <Field label="Staff login button text">
+              {editingBranding ? (
+                <input className="bc-input" style={styles.input} value={draftBranding.staffLoginLabel}
+                  onChange={(e) => updateBrandingField("staffLoginLabel", e.target.value)} />
+              ) : (
+                <div style={styles.readOnlyVal}>{branding.staffLoginLabel}</div>
+              )}
+            </Field>
+            <Field label="GST rate shown on customer quote (%)">
+              {editingBranding ? (
+                <input className="bc-input" style={styles.inputSm} type="number" value={draftBranding.gstRate}
+                  onChange={(e) => updateBrandingField("gstRate", e.target.value)} />
+              ) : (
+                <div style={styles.readOnlyVal}>{branding.gstRate}%</div>
+              )}
+            </Field>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>STYLE</div>
+            <div className="bc-grid" style={styles.grid}>
+              <Field label="Font">
+                {editingBranding ? (
+                  <select className="bc-select" style={styles.inputSm} value={draftBranding.fontFamily}
+                    onChange={(e) => updateBrandingField("fontFamily", e.target.value)}>
+                    {FONT_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+                  </select>
+                ) : (
+                  <div style={{ ...styles.readOnlyVal, fontFamily: branding.fontFamily }}>
+                    {FONT_OPTIONS.find((f) => f.value === branding.fontFamily)?.label || "Custom"}
+                  </div>
+                )}
+              </Field>
+              <Field label="Text color">
+                {editingBranding ? (
+                  <input type="color" value={draftBranding.color}
+                    onChange={(e) => updateBrandingField("color", e.target.value)}
+                    style={{ ...styles.inputSm, padding: 3, height: 38, cursor: "pointer" }} />
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ width: 18, height: 18, borderRadius: 4, background: branding.color, border: "1px solid #D8D4C6", display: "inline-block" }} />
+                    <div style={styles.readOnlyVal}>{branding.color}</div>
+                  </div>
+                )}
+              </Field>
+              <Field label="Heading font size (px)">
+                {editingBranding ? (
+                  <select className="bc-select" style={styles.inputSm} value={draftBranding.fontSize}
+                    onChange={(e) => updateBrandingField("fontSize", e.target.value)}>
+                    {["14", "16", "18", "20", "22", "24", "28", "32"].map((s) => <option key={s} value={s}>{s}px</option>)}
+                  </select>
+                ) : (
+                  <div style={styles.readOnlyVal}>{branding.fontSize}px</div>
+                )}
+              </Field>
+            </div>
+
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>LOGO / HEADER IMAGE</div>
+            {(editingBranding ? draftBranding.logoDataUrl : branding.logoDataUrl) ? (
+              <img
+                src={editingBranding ? draftBranding.logoDataUrl : branding.logoDataUrl}
+                alt="Logo preview"
+                style={{ maxWidth: 120, maxHeight: 80, display: "block", marginBottom: 10, borderRadius: 6, border: "1px solid #E4E1D8" }}
+              />
+            ) : (
+              <div style={{ ...styles.defaultsHint, marginBottom: 10 }}>No custom logo set — the default box icon is shown.</div>
+            )}
+            {editingBranding && (
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <input type="file" accept="image/*" onChange={handleLogoUpload} style={{ fontSize: 12.5 }} />
+                {draftBranding.logoDataUrl && (
+                  <button className="bc-btn" style={styles.linkBtnDanger} onClick={removeLogo}>Remove image</button>
+                )}
+              </div>
+            )}
+
+            {/* Live preview of the customer header, using current draft/saved values */}
+            <div style={styles.divider} />
+            <div style={styles.panelLabel}>PREVIEW</div>
+            <div style={{ background: "#F7F6F1", borderRadius: 8, padding: 14, display: "flex", alignItems: "center", gap: 10 }}>
+              {(editingBranding ? draftBranding.logoDataUrl : branding.logoDataUrl) ? (
+                <img src={editingBranding ? draftBranding.logoDataUrl : branding.logoDataUrl} alt="Logo" style={{ width: 34, height: 34, objectFit: "contain" }} />
+              ) : (
+                <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+                  <path d="M2 9 L15 3 L28 9 L28 24 L15 30 L2 24 Z" stroke="#2B4C7E" strokeWidth="1.6" fill="#F0EEE6" />
+                  <path d="M2 9 L15 15 L28 9 M15 15 L15 30" stroke="#2B4C7E" strokeWidth="1.6" />
+                </svg>
+              )}
+              <div>
+                <div style={{
+                  fontFamily: editingBranding ? draftBranding.fontFamily : branding.fontFamily,
+                  color: editingBranding ? draftBranding.color : branding.color,
+                  fontSize: `${editingBranding ? draftBranding.fontSize : branding.fontSize}px`,
+                  fontWeight: 700, letterSpacing: "0.03em",
+                }}>
+                  {editingBranding ? draftBranding.heading : branding.heading}
+                </div>
+                <div style={{ fontSize: 12, color: "#6B7590" }}>{editingBranding ? draftBranding.subheading : branding.subheading}</div>
+              </div>
+            </div>
+
+            {editingBranding && (
+              <>
+                <div style={styles.divider} />
+                <button className="bc-btn" style={styles.linkBtn} onClick={restoreFactoryBranding}>
+                  Reset this form to original factory branding
+                </button>
+              </>
+            )}
+
+            <div style={styles.divider} />
+            <div style={styles.ordersHeader}>
+              <div style={styles.panelLabel}>EMPLOYEE LOGIN CREDENTIALS</div>
+              {!editingAuth ? (
+                <button className="bc-btn" style={styles.primaryBtn2} onClick={startEditingAuth}>Edit</button>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="bc-btn" style={styles.ghostBtn} onClick={cancelEditingAuth}>Cancel</button>
+                  <button className="bc-btn" style={styles.primaryBtn2} onClick={saveAuthSettings}>Save</button>
+                </div>
+              )}
+            </div>
+            <p style={styles.defaultsHint}>
+              This is the username and password used to sign in to the Employee Portal. Changing it takes effect immediately —
+              anyone using the old password will need the new one.
+            </p>
+            <div className="bc-grid" style={styles.grid}>
+              <Field label="Username">
+                {editingAuth ? (
+                  <input className="bc-input" style={styles.inputSm} value={draftAuthSettings.username}
+                    onChange={(e) => updateAuthField("username", e.target.value)} />
+                ) : (
+                  <div style={styles.readOnlyVal}>{authSettings.username}</div>
+                )}
+              </Field>
+              <Field label="Password">
+                {editingAuth ? (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input className="bc-input" style={styles.inputSm} type={showAuthPassword ? "text" : "password"}
+                      value={draftAuthSettings.password} onChange={(e) => updateAuthField("password", e.target.value)} />
+                    <button className="bc-btn" style={styles.linkBtn} onClick={() => setShowAuthPassword((v) => !v)}>
+                      {showAuthPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                ) : (
+                  <div style={styles.readOnlyVal}>••••••••••</div>
+                )}
+              </Field>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
@@ -1176,10 +2299,19 @@ function StaffApp({ onExit }) {
 // ---- Customer-facing quote form (no login) ----
 function CustomerView({ onStaffLoginClick }) {
   const [defaults, setDefaults] = useState(FACTORY_DEFAULTS);
-  const [form, setForm] = useState(buildEmptyForm(FACTORY_DEFAULTS, "3"));
+  const [form, setForm] = useState({
+    ...buildEmptyForm(FACTORY_DEFAULTS, "3"),
+    phone: "", email: "", L: "", W: "", H: "", dimUnit: "cm",
+    layerGsms: highestLayerGsms("3"),
+    layerBFs: highestLayerBFs("3"),
+  });
   const [layersOverridden, setLayersOverridden] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submittedOrderNumber, setSubmittedOrderNumber] = useState("");
+  const [submittedSizeFlag, setSubmittedSizeFlag] = useState(false);
   const [toast, setToast] = useState(null);
+  const [branding, setBranding] = useState(FACTORY_BRANDING);
 
   useEffect(() => {
     if (!document.getElementById(FONT_LINK_ID)) {
@@ -1192,10 +2324,25 @@ function CustomerView({ onStaffLoginClick }) {
     }
   }, []);
 
+  // Load branding settings
   useEffect(() => {
     (async () => {
       try {
-        const res = await localGet("defaults");
+        const res = await localGet("branding");
+        if (res && res.value) {
+          const saved = JSON.parse(res.value);
+          setBranding({ ...FACTORY_BRANDING, ...saved });
+        }
+      } catch (e) {
+        // use factory branding
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localGet("customerDefaults");
         if (res && res.value) {
           const saved = JSON.parse(res.value);
           const merged = {
@@ -1208,7 +2355,12 @@ function CustomerView({ onStaffLoginClick }) {
             costComponents: { ...FACTORY_DEFAULTS.costComponents, ...(saved.costComponents || {}) },
           };
           setDefaults(merged);
-          setForm(buildEmptyForm(merged, "3"));
+          setForm((f) => ({
+            ...buildEmptyForm(merged, f.ply || "3"),
+            phone: f.phone, email: f.email, L: f.L, W: f.W, H: f.H, dimUnit: f.dimUnit,
+            layerGsms: layersOverridden ? f.layerGsms : highestLayerGsms(f.ply || "3"),
+            layerBFs: layersOverridden ? f.layerBFs : highestLayerBFs(f.ply || "3"),
+          }));
         }
       } catch (e) {
         // use factory defaults
@@ -1226,8 +2378,8 @@ function CustomerView({ onStaffLoginClick }) {
     if (key === "ply") {
       setForm((f) => {
         const newTypes = layerTypesForPly(value);
-        const plyDefaults = defaults.layerGsmsByPly[value] || defaultLayerGsms(value);
-        const bfDefaults = defaults.layerBFsByPly[value] || defaultLayerBFs(value);
+        const plyDefaults = highestLayerGsms(value);
+        const bfDefaults = highestLayerBFs(value);
         const mergedGsm = layersOverridden
           ? newTypes.map((_, i) => (f.layerGsms[i] !== undefined ? f.layerGsms[i] : plyDefaults[i]))
           : [...plyDefaults];
@@ -1257,7 +2409,8 @@ function CustomerView({ onStaffLoginClick }) {
     });
   }
 
-  const L = num(form.L), W = num(form.W), H = num(form.H), qtyNum = num(form.qty);
+  const unitFactor = UNIT_TO_CM[form.dimUnit] ?? 1;
+  const L = num(form.L) * unitFactor, W = num(form.W) * unitFactor, H = num(form.H) * unitFactor, qtyNum = num(form.qty);
   const layerTypes = useMemo(() => layerTypesForPly(form.ply), [form.ply]);
   const totalGsm = useMemo(() => {
     return layerTypes.reduce((sum, type, i) => {
@@ -1283,11 +2436,25 @@ function CustomerView({ onStaffLoginClick }) {
 
   const otherCostPerKg = COST_FIELD_LABELS.reduce((sum, [key]) => sum + num(defaults.costComponents[key]), 0);
   const otherCost = (otherCostPerKg / 1000) * weightPerBox;
-  const costPerBox = kraftPaperCost + otherCost;
+  const qtySlabExtra = findQtySlabExtra(defaults.qtySlabs, qtyNum);
+  const costPerBox = kraftPaperCost + otherCost + qtySlabExtra;
   const totalCost = qtyNum > 0 ? costPerBox * qtyNum : null;
+  const hasValidDims = L > 0 && W > 0 && H > 0;
+  const displayCostPerBox = hasValidDims ? costPerBox : 0;
+  const displayTotalCost = hasValidDims && qtyNum > 0 ? costPerBox * qtyNum : 0;
+  const displayWeightPerBox = hasValidDims ? weightPerBox : 0;
+  const displayTotalWeight = hasValidDims && qtyNum > 0 ? (weightPerBox * qtyNum) / 1000 : 0;
+
+  const maxReelSize = num(defaults.maxReelSize);
+  const maxCuttingSize = num(defaults.maxCuttingSize);
+  const exceedsReelSize = hasValidDims && maxReelSize > 0 && reelSize1Up > maxReelSize;
+  const exceedsCuttingSize = hasValidDims && maxCuttingSize > 0 && cuttingSize > maxCuttingSize;
+  const sizeExceedsLimit = exceedsReelSize || exceedsCuttingSize;
 
   function validate() {
     if (!form.customerName.trim()) return "Please enter your name";
+    if (!form.phone.trim()) return "Please enter your phone number";
+    if (form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) return "Please enter a valid email ID";
     if (!form.itemName.trim()) return "Please enter the item name";
     if (!form.qty || qtyNum <= 0) return "Please enter a quantity greater than 0";
     if (L <= 0 || W <= 0 || H <= 0) return "Please enter valid box dimensions";
@@ -1300,15 +2467,22 @@ function CustomerView({ onStaffLoginClick }) {
       showToast("error", err);
       return;
     }
+    const orderNumber = generateOrderNumber();
     const record = {
       id: `sub_${Date.now()}`,
+      orderNumber,
       customerName: form.customerName.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim(),
       itemName: form.itemName.trim(),
       qty: qtyNum,
       L, W, H,
+      enteredUnit: form.dimUnit,
       ply: form.ply,
       layerGsms: form.layerGsms,
       layerBFs: form.layerBFs,
+      qtySlabExtraPerBox: qtySlabExtra,
+      sizeExceedsLimit,
       costPerBox,
       totalCost,
       date: new Date().toISOString(),
@@ -1317,6 +2491,8 @@ function CustomerView({ onStaffLoginClick }) {
       const res = await localGet("customerSubmissions");
       const existing = res && res.value ? JSON.parse(res.value) : [];
       await localSet("customerSubmissions", JSON.stringify([record, ...existing]));
+      setSubmittedOrderNumber(orderNumber);
+      setSubmittedSizeFlag(sizeExceedsLimit);
       setSubmitted(true);
     } catch (e) {
       console.error(e);
@@ -1325,32 +2501,45 @@ function CustomerView({ onStaffLoginClick }) {
   }
 
   function startOver() {
-    setForm(buildEmptyForm(defaults, "3"));
+    setForm({
+      ...buildEmptyForm(defaults, "3"),
+      phone: "", email: "", L: "", W: "", H: "", dimUnit: "cm",
+      layerGsms: highestLayerGsms("3"),
+      layerBFs: highestLayerBFs("3"),
+    });
     setLayersOverridden(false);
+    setAdvancedOpen(false);
     setSubmitted(false);
   }
 
+  const [heroRef, heroVisible] = useReveal();
+  const [detailsRef, detailsVisible] = useReveal();
+  const [dimsRef, dimsVisible] = useReveal();
+  const [previewRef, previewVisible] = useReveal();
+  const [summaryRef, summaryVisible] = useReveal();
+  const animatedTotal = useCountUp(displayTotalCost);
+  const animatedPerBox = useCountUp(displayCostPerBox);
+
   return (
-    <div style={styles.app}>
-      <style>{`
-        * { box-sizing: border-box; }
-        .bc-input:focus, .bc-select:focus, .bc-btn:focus-visible { outline: 2px solid #2B4C7E; outline-offset: 1px; }
-      `}</style>
-      <header style={styles.header}>
-        <div style={styles.headerInner}>
-          <div style={styles.brandRow}>
-            <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
-              <path d="M2 9 L15 3 L28 9 L28 24 L15 30 L2 24 Z" stroke="#2B4C7E" strokeWidth="1.6" fill="#F0EEE6"/>
-              <path d="M2 9 L15 15 L28 9 M15 15 L15 30" stroke="#2B4C7E" strokeWidth="1.6"/>
+    <div className="cs-root">
+      <style>{PREMIUM_STYLES}</style>
+
+      <div className="cs-header">
+        <div className="cs-header-brand">
+          {branding.logoDataUrl ? (
+            <img src={branding.logoDataUrl} alt="Logo" style={{ width: 28, height: 28, objectFit: "contain" }} />
+          ) : (
+            <svg width="26" height="26" viewBox="0 0 30 30" fill="none">
+              <path d="M2 9 L15 3 L28 9 L28 24 L15 30 L2 24 Z" stroke="#1B2A4A" strokeWidth="1.6" fill="none"/>
+              <path d="M2 9 L15 15 L28 9 M15 15 L15 30" stroke="#1B2A4A" strokeWidth="1.6"/>
             </svg>
-            <div>
-              <div style={styles.brandTitle}>Ambicraft&nbsp;EDGE</div>
-              <div style={styles.brandSub}>Get a Box Quote</div>
-            </div>
-          </div>
-          <button className="bc-btn" style={styles.logoutBtn} onClick={onStaffLoginClick}>Staff Login</button>
+          )}
+          <span style={{ fontWeight: 700, fontSize: 15, color: branding.color, fontFamily: branding.fontFamily }}>
+            {branding.heading}
+          </span>
         </div>
-      </header>
+        <button className="cs-staff-link" onClick={onStaffLoginClick}>{branding.staffLoginLabel || "Employee Portal"}</button>
+      </div>
 
       {toast && (
         <div style={{ ...styles.toast, ...(toast.type === "error" ? styles.toastError : styles.toastSuccess) }}>
@@ -1358,79 +2547,211 @@ function CustomerView({ onStaffLoginClick }) {
         </div>
       )}
 
-      <main style={styles.main}>
-        <div style={{ maxWidth: 520, margin: "0 auto" }}>
-          {submitted ? (
-            <div style={{ ...styles.panel, textAlign: "center", padding: "48px 24px" }}>
-              <div style={{ fontSize: 32, marginBottom: 10 }}>✓</div>
-              <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8, color: "#1B2A4A" }}>Quote request submitted</div>
-              <div style={{ fontSize: 13.5, color: "#556077", marginBottom: 20 }}>
-                Thanks — we've received your details and will get back to you shortly about your order.
-              </div>
-              <button className="bc-btn" style={styles.primaryBtn} onClick={startOver}>Get another quote</button>
+      {submitted ? (
+        <div className="cs-confirm-wrap">
+          <div className="cs-confirm-card">
+            <div className="cs-check">✓</div>
+            <div style={{ fontSize: 17, fontWeight: 700, textAlign: "center", marginBottom: 2 }}>
+              Your order request has been generated successfully.
             </div>
-          ) : (
-            <div style={styles.panel}>
-              <div style={styles.panelLabel}>YOUR DETAILS</div>
-              <Field label="Your name">
-                <input className="bc-input" style={styles.input} value={form.customerName}
-                  onChange={(e) => updateField("customerName", e.target.value)} placeholder="e.g. Sunrise Traders" />
-              </Field>
-              <Field label="Item name">
-                <input className="bc-input" style={styles.input} value={form.itemName}
-                  onChange={(e) => updateField("itemName", e.target.value)} placeholder="e.g. Mango box 5kg" />
-              </Field>
-              <Field label="Quantity required">
-                <input className="bc-input" style={styles.input} type="number" min="0" value={form.qty}
-                  onChange={(e) => updateField("qty", e.target.value)} placeholder="e.g. 500" />
-              </Field>
-
-              <div style={styles.divider} />
-              <div style={styles.panelLabel}>BOX DIMENSIONS (cm, external)</div>
-              <div style={styles.dimRow}>
-                <Field label="L"><input className="bc-input" style={styles.inputSm} type="number" value={form.L} onChange={(e) => updateField("L", e.target.value)} /></Field>
-                <Field label="W"><input className="bc-input" style={styles.inputSm} type="number" value={form.W} onChange={(e) => updateField("W", e.target.value)} /></Field>
-                <Field label="H"><input className="bc-input" style={styles.inputSm} type="number" value={form.H} onChange={(e) => updateField("H", e.target.value)} /></Field>
+            <div className="cs-summary-eyebrow" style={{ color: "#9AA3B8", textAlign: "center", marginTop: 16 }}>Order Request Number</div>
+            <div className="cs-order-num">{submittedOrderNumber}</div>
+            {submittedSizeFlag && (
+              <div style={{
+                background: "#FFF6E6", border: "1px solid #F0D9A0", color: "#8A6416", fontSize: 12.5,
+                lineHeight: 1.6, borderRadius: 10, padding: "10px 14px", margin: "0 0 20px",
+              }}>
+                This box size is larger than our standard board capacity — we'll review feasibility and confirm final pricing before processing.
               </div>
-              <Field label="Ply">
-                <select className="bc-select" style={styles.inputSm} value={form.ply} onChange={(e) => updateField("ply", e.target.value)}>
-                  <option value="3">3-ply</option>
-                  <option value="5">5-ply</option>
-                  <option value="7">7-ply</option>
-                </select>
-              </Field>
+            )}
 
-              <div style={styles.divider} />
-              <div style={styles.panelLabel}>PAPER SPECIFICATION (GSM &amp; BF)</div>
-              {layerTypes.map((type, i) => (
-                <div key={i} style={styles.dimRow2}>
-                  <Field label={`${layerLabel(type, i, layerTypes)}${type === "flute" ? " (fluting)" : ""} GSM`}>
-                    <input className="bc-input" style={styles.inputSm} type="number"
-                      value={form.layerGsms[i] ?? ""} onChange={(e) => updateLayerGsm(i, e.target.value)} />
-                  </Field>
-                  <Field label="BF grade">
-                    <select className="bc-select" style={styles.inputSm} value={form.layerBFs[i] ?? "20"}
-                      onChange={(e) => updateLayerBF(i, e.target.value)}>
-                      {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
-                    </select>
-                  </Field>
-                </div>
-              ))}
-
-              <div style={styles.divider} />
-              <div style={styles.resultsGrid}>
-                <Result label="Cost per box" value={`₹${fmt(costPerBox)}`} big />
-                <Result label="Total cost" value={totalCost !== null ? `₹${fmt(totalCost)}` : "Enter quantity"} big />
-              </div>
-
-              <div style={styles.divider} />
-              <button className="bc-btn" style={styles.primaryBtn} onClick={submitQuote}>
-                Submit — request this order
-              </button>
+            <div style={{ height: 1, background: "#EEF0F2", margin: "22px 0" }} />
+            <div style={{ fontSize: 13.5, color: "#6B7280", lineHeight: 1.7 }}>
+              <strong style={{ color: "#1B2A4A" }}>Please note:</strong>
+              <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+                <li>The calculated cost is applicable only for a Plain Regular Slotted Container (RSC) box.</li>
+                <li>If you require any other box style, die-cutting, special finishing, or printing, additional charges will apply.</li>
+                <li>Printing plate charges are separate.</li>
+                <li>Shipping charges are extra.</li>
+              </ul>
             </div>
-          )}
+            <div style={{ height: 1, background: "#EEF0F2", margin: "22px 0" }} />
+            <div style={{ fontSize: 13.5, color: "#6B7280", lineHeight: 1.7 }}>
+              <strong style={{ color: "#1B2A4A" }}>For further assistance, contact us at:</strong>
+              <div style={{ marginTop: 6 }}>Phone: +91 7259231281</div>
+              <div>Email: info@ambicraftcartons.com</div>
+            </div>
+            <div style={{ fontSize: 12, color: "#9AA3B8", marginTop: 16, fontStyle: "italic", textAlign: "center" }}>
+              Kindly refer to your Order Request Number when contacting us.
+            </div>
+            <button className="cs-btn-primary" style={{ background: "#1B2A4A", color: "#fff" }} onClick={startOver}>
+              Get another quote
+            </button>
+          </div>
         </div>
-      </main>
+      ) : (
+        <>
+          <div ref={heroRef} className={`cs-hero ${heroVisible ? "cs-visible" : ""}`} style={{ opacity: heroVisible ? 1 : 0, transform: heroVisible ? "translateY(0)" : "translateY(10px)", transition: "opacity 0.6s ease, transform 0.6s ease" }}>
+            <div className="cs-eyebrow">{branding.eyebrow || "Instant Estimate"}</div>
+            <h1 style={{ fontFamily: branding.fontFamily !== FACTORY_BRANDING.fontFamily ? branding.fontFamily : undefined }}>
+              {branding.subheading || "Get a Box Quote"}
+            </h1>
+            <p>{branding.heroText || "Enter your box details below and see your price update in real time."}</p>
+          </div>
+
+          <div className="cs-content">
+            <div>
+              <div ref={detailsRef} className={`cs-section ${detailsVisible ? "cs-visible" : ""}`}>
+                <h2>Your details</h2>
+                <p className="cs-sub">So we know who's asking and how to reach you.</p>
+                <div className="cs-field">
+                  <label className="cs-label">Your name</label>
+                  <input className="cs-input" value={form.customerName} onChange={(e) => updateField("customerName", e.target.value)} />
+                </div>
+                <div className="cs-field-row">
+                  <div className="cs-field">
+                    <label className="cs-label">Phone number</label>
+                    <input className="cs-input" type="tel" value={form.phone} onChange={(e) => updateField("phone", e.target.value)} />
+                  </div>
+                  <div className="cs-field">
+                    <label className="cs-label">Email ID</label>
+                    <input className="cs-input" type="email" value={form.email} onChange={(e) => updateField("email", e.target.value)} />
+                  </div>
+                </div>
+                <div className="cs-field-row">
+                  <div className="cs-field">
+                    <label className="cs-label">Item name</label>
+                    <input className="cs-input" value={form.itemName} onChange={(e) => updateField("itemName", e.target.value)} />
+                  </div>
+                  <div className="cs-field">
+                    <label className="cs-label">Quantity required</label>
+                    <input className="cs-input" type="number" min="0" value={form.qty} onChange={(e) => updateField("qty", e.target.value)} />
+                  </div>
+                </div>
+              </div>
+
+              <div ref={dimsRef} className={`cs-section ${dimsVisible ? "cs-visible" : ""}`}>
+                <h2>Box dimensions</h2>
+                <p className="cs-sub">External size — choose your unit, then enter Length, Width, and Height.</p>
+                <div className="cs-field" style={{ maxWidth: 160 }}>
+                  <label className="cs-label">Unit</label>
+                  <select className="cs-select" value={form.dimUnit} onChange={(e) => updateField("dimUnit", e.target.value)}>
+                    <option value="cm">Centimetres (cm)</option>
+                    <option value="mm">Millimetres (mm)</option>
+                    <option value="in">Inches (in)</option>
+                  </select>
+                </div>
+                <div className="cs-row3">
+                  <div className="cs-field">
+                    <label className="cs-label">Length ({UNIT_LABELS[form.dimUnit]})</label>
+                    <input className="cs-input" type="number" value={form.L} onChange={(e) => updateField("L", e.target.value)} />
+                  </div>
+                  <div className="cs-field">
+                    <label className="cs-label">Width ({UNIT_LABELS[form.dimUnit]})</label>
+                    <input className="cs-input" type="number" value={form.W} onChange={(e) => updateField("W", e.target.value)} />
+                  </div>
+                  <div className="cs-field">
+                    <label className="cs-label">Height ({UNIT_LABELS[form.dimUnit]})</label>
+                    <input className="cs-input" type="number" value={form.H} onChange={(e) => updateField("H", e.target.value)} />
+                  </div>
+                </div>
+                <div className="cs-note">Regular Slotted Container (RSC) — our standard box style</div>
+                <div className="cs-field">
+                  <label className="cs-label">Ply</label>
+                  <select className="cs-select" value={form.ply} onChange={(e) => updateField("ply", e.target.value)}>
+                    <option value="3">3-ply</option>
+                    <option value="5">5-ply</option>
+                    <option value="7">7-ply</option>
+                  </select>
+                </div>
+
+                <button className="cs-toggle" onClick={() => setAdvancedOpen((v) => !v)}>
+                  <span>Advanced Customisation (paper type &amp; grade)</span>
+                  <span className={`cs-chevron ${advancedOpen ? "cs-open" : ""}`}>▾</span>
+                </button>
+                <div className="cs-note" style={{ marginTop: 8 }}>
+                  Note: If the GSM and BF are not selected, the system will automatically use the highest quality paper grade available for all calculations.
+                </div>
+                <div className={`cs-advanced ${advancedOpen ? "cs-open" : ""}`}>
+                  <div className="cs-advanced-inner">
+                    {layerTypes.map((type, i) => (
+                      <div key={i} className="cs-row2" style={{ marginBottom: 12 }}>
+                        <div>
+                          <label className="cs-label">{layerLabel(type, i, layerTypes)}{type === "flute" ? " (fluting)" : ""} GSM</label>
+                          <select className="cs-select" value={form.layerGsms[i] ?? GSM_OPTIONS[0]} onChange={(e) => updateLayerGsm(i, e.target.value)}>
+                            {GSM_OPTIONS.map((g) => <option key={g} value={g}>{g} GSM</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="cs-label">BF grade</label>
+                          <select className="cs-select" value={form.layerBFs[i] ?? "20"} onChange={(e) => updateLayerBF(i, e.target.value)}>
+                            {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div ref={previewRef} className={`cs-section ${previewVisible ? "cs-visible" : ""}`}>
+                <h2>Packaging Preview</h2>
+                <p className="cs-sub">A quick visual of your box shape and wall construction.</p>
+                <div className="cs-diagram-grid">
+                  <div className="cs-diagram-card">
+                    {hasValidDims ? (
+                      <>
+                        <RSCDiagram L={L} W={W} H={H} />
+                        <div className="cs-diagram-caption">Box Shape — {L} × {W} × {H} cm</div>
+                      </>
+                    ) : (
+                      <>
+                        <PlaceholderBoxIcon />
+                        <div className="cs-diagram-caption">Box Shape</div>
+                        <div className="cs-diagram-hint">Enter box dimensions to preview</div>
+                      </>
+                    )}
+                  </div>
+                  <div className="cs-diagram-card">
+                    {hasValidDims ? (
+                      <>
+                        <PlyDiagram layerTypes={layerTypes} layerGsms={form.layerGsms} layerBFs={form.layerBFs} />
+                        <div className="cs-diagram-caption">Wall Construction — {form.ply}-ply</div>
+                      </>
+                    ) : (
+                      <>
+                        <PlaceholderLayersIcon />
+                        <div className="cs-diagram-caption">Wall Construction</div>
+                        <div className="cs-diagram-hint">Enter box dimensions to preview</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div ref={summaryRef} className={`cs-summary ${summaryVisible ? "cs-visible" : ""}`}>
+              <div className="cs-summary-eyebrow">Estimated total</div>
+              <div className="cs-summary-big">₹{fmt(animatedTotal)}</div>
+              <div className="cs-summary-row"><span>Cost per box</span><span>₹{fmt(animatedPerBox)}</span></div>
+              <div className="cs-gst-note">
+                This is the basic cost. Applicable GST ({branding.gstRate}%) will be added during final billing.
+              </div>
+              <div className="cs-summary-row"><span>Weight per box</span><span>{fmt(displayWeightPerBox)} g</span></div>
+              <div className="cs-summary-row"><span>Total weight</span><span>{fmt(displayTotalWeight)} kg</span></div>
+              {sizeExceedsLimit && (
+                <div className="cs-size-warning">
+                  This size is larger than our standard board capacity
+                  {maxReelSize > 0 && exceedsReelSize ? ` (max reel size ${fmt(maxReelSize)} cm)` : ""}
+                  {maxCuttingSize > 0 && exceedsCuttingSize ? ` (max cutting size ${fmt(maxCuttingSize)} cm)` : ""}.
+                  You can still submit — this request will be marked as subject to review before we confirm feasibility and final pricing.
+                </div>
+              )}
+              <button className="cs-btn-primary" onClick={submitQuote}>Submit — request this order</button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1439,8 +2760,24 @@ function CustomerView({ onStaffLoginClick }) {
 function App() {
   const [staffAuthed, setStaffAuthed] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
+  const [authSettings, setAuthSettings] = useState(FACTORY_AUTH);
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+
+  // Stop the browser's default "scroll wheel over a focused number input
+  // changes its value" behavior — but only when the scroll happens directly
+  // on that field, not for unrelated scrolling elsewhere on the page.
+  useEffect(() => {
+    function handleWheel(e) {
+      const el = document.activeElement;
+      if (el && el.tagName === "INPUT" && el.type === "number" && e.target === el) {
+        el.blur();
+      }
+    }
+    document.addEventListener("wheel", handleWheel, { passive: true });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, []);
 
   useEffect(() => {
     try {
@@ -1450,8 +2787,23 @@ function App() {
     }
   }, []);
 
+  // Load employee login credentials (managed from the staff Branding tab)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localGet("authSettings");
+        if (res && res.value) {
+          const saved = JSON.parse(res.value);
+          setAuthSettings({ ...FACTORY_AUTH, ...saved });
+        }
+      } catch (e) {
+        // use factory credentials
+      }
+    })();
+  }, []);
+
   function attemptLogin() {
-    if (password === STAFF_PASSWORD) {
+    if (username.trim() === authSettings.username && password === authSettings.password) {
       try {
         sessionStorage.setItem("staffAuthed", "1");
       } catch (e) {
@@ -1459,10 +2811,11 @@ function App() {
       }
       setStaffAuthed(true);
       setShowLogin(false);
+      setUsername("");
       setPassword("");
       setLoginError("");
     } else {
-      setLoginError("Incorrect password");
+      setLoginError("Incorrect username or password");
     }
   }
 
@@ -1481,24 +2834,40 @@ function App() {
 
   if (showLogin) {
     return (
-      <div style={{ ...styles.app, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ ...styles.panel, width: 320 }}>
-          <div style={styles.panelLabel}>STAFF LOGIN</div>
-          <Field label="Password">
-            <input
-              className="bc-input"
-              style={styles.input}
-              type="password"
-              value={password}
-              onChange={(e) => { setPassword(e.target.value); setLoginError(""); }}
-              onKeyDown={(e) => e.key === "Enter" && attemptLogin()}
-              autoFocus
-            />
-          </Field>
-          {loginError && <div style={{ color: "#B23B3B", fontSize: 12.5, marginBottom: 10 }}>{loginError}</div>}
-          <div style={{ display: "flex", gap: 10 }}>
-            <button className="bc-btn" style={styles.primaryBtn} onClick={attemptLogin}>Log in</button>
-            <button className="bc-btn" style={styles.ghostBtn} onClick={() => { setShowLogin(false); setPassword(""); setLoginError(""); }}>Cancel</button>
+      <div className="cs-root">
+        <style>{PREMIUM_STYLES}</style>
+        <div className="cs-login-wrap">
+          <div className="cs-login-card">
+            <div className="cs-login-icon">🔒</div>
+            <div className="cs-login-title">Employee Portal</div>
+            <div className="cs-login-sub">Sign in with your employee credentials</div>
+            {loginError && <div className="cs-login-error">{loginError}</div>}
+            <div className="cs-field">
+              <label className="cs-label">Username</label>
+              <input
+                className="cs-input"
+                value={username}
+                onChange={(e) => { setUsername(e.target.value); setLoginError(""); }}
+                onKeyDown={(e) => e.key === "Enter" && attemptLogin()}
+                autoFocus
+              />
+            </div>
+            <div className="cs-field">
+              <label className="cs-label">Password</label>
+              <input
+                className="cs-input"
+                type="password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setLoginError(""); }}
+                onKeyDown={(e) => e.key === "Enter" && attemptLogin()}
+              />
+            </div>
+            <button className="cs-btn-primary" style={{ background: "#1B2A4A", color: "#fff" }} onClick={attemptLogin}>
+              Sign in
+            </button>
+            <button className="cs-login-cancel" onClick={() => { setShowLogin(false); setUsername(""); setPassword(""); setLoginError(""); }}>
+              Back to quote page
+            </button>
           </div>
         </div>
       </div>
@@ -1523,6 +2892,100 @@ function Result({ label, value, big }) {
       <div style={styles.resultLabel}>{label}</div>
       <div style={{ ...styles.resultValue, ...(big ? styles.resultValueBig : {}) }}>{value}</div>
     </div>
+  );
+}
+
+// Pseudo-3D line diagram of a Regular Slotted Container, labeled with L/W/H
+// Muted dashed-outline placeholders shown before the customer enters dimensions
+function PlaceholderBoxIcon() {
+  return (
+    <svg viewBox="0 0 220 170" width="100%" height="150">
+      <g fill="none" stroke="#C7CCD6" strokeWidth="1.4" strokeDasharray="5,4">
+        <polygon points="60,50 150,50 190,25 100,25" />
+        <polygon points="150,50 150,140 190,115 190,25" />
+        <rect x="60" y="50" width="90" height="90" />
+      </g>
+    </svg>
+  );
+}
+
+function PlaceholderLayersIcon() {
+  const bandH = 26, bandW = 90, ox = 65, oy = 20;
+  return (
+    <svg viewBox="0 0 220 170" width="100%" height="150">
+      {[0, 1, 2].map((i) => (
+        <rect key={i} x={ox} y={oy + i * bandH} width={bandW} height={bandH - 3}
+          fill="none" stroke="#C7CCD6" strokeWidth="1.4" strokeDasharray="5,4" />
+      ))}
+    </svg>
+  );
+}
+
+function RSCDiagram({ L, W, H }) {
+  const maxDim = 100;
+  const scale = maxDim / Math.max(L, W, H, 1);
+  const w = Math.max(W * scale, 30);
+  const h = Math.max(H * scale, 30);
+  const dOffset = Math.max(Math.min(L * scale * 0.55, 50), 18); // depth (L) shown as isometric offset
+  const ox = 70, oy = 55;
+
+  const frontTL = [ox, oy], frontTR = [ox + w, oy], frontBL = [ox, oy + h], frontBR = [ox + w, oy + h];
+  const backTL = [ox - dOffset, oy - dOffset * 0.55], backTR = [ox + w - dOffset, oy - dOffset * 0.55];
+  const backBR = [ox + w - dOffset, oy + h - dOffset * 0.55];
+
+  const topFace = [frontTL, frontTR, backTR, backTL].map((p) => p.join(",")).join(" ");
+  const sideFace = [frontTR, frontBR, backBR, backTR].map((p) => p.join(",")).join(" ");
+
+  return (
+    <svg viewBox="0 0 240 230" width="100%" height="190" fontFamily="'IBM Plex Mono', monospace">
+      <polygon points={topFace} fill="#EEF1F6" stroke="#2B4C7E" strokeWidth="1.2" />
+      <polygon points={sideFace} fill="#E4E9F1" stroke="#2B4C7E" strokeWidth="1.2" />
+      <rect x={ox} y={oy} width={w} height={h} fill="#FAFBFC" stroke="#2B4C7E" strokeWidth="1.4" />
+      {/* top flap crease lines meeting at center, indicating RSC flaps */}
+      <line x1={frontTL[0]} y1={frontTL[1]} x2={(frontTL[0] + backTR[0]) / 2} y2={(frontTL[1] + backTR[1]) / 2} stroke="#2B4C7E" strokeWidth="0.6" strokeDasharray="2,2" />
+      <line x1={frontTR[0]} y1={frontTR[1]} x2={(frontTL[0] + backTR[0]) / 2} y2={(frontTL[1] + backTR[1]) / 2} stroke="#2B4C7E" strokeWidth="0.6" strokeDasharray="2,2" />
+      <line x1={backTL[0]} y1={backTL[1]} x2={(frontTL[0] + backTR[0]) / 2} y2={(frontTL[1] + backTR[1]) / 2} stroke="#2B4C7E" strokeWidth="0.6" strokeDasharray="2,2" />
+      <line x1={backTR[0]} y1={backTR[1]} x2={(frontTL[0] + backTR[0]) / 2} y2={(frontTL[1] + backTR[1]) / 2} stroke="#2B4C7E" strokeWidth="0.6" strokeDasharray="2,2" />
+
+      {/* W label - front bottom edge */}
+      <text x={ox + w / 2} y={oy + h + 20} textAnchor="middle" fontSize="10" fill="#1B2A4A" fontWeight="600">W {fmt(W)}</text>
+      {/* H label - front left edge */}
+      <text x={ox - 14} y={oy + h / 2} textAnchor="middle" fontSize="10" fill="#1B2A4A" fontWeight="600" transform={`rotate(-90 ${ox - 14} ${oy + h / 2})`}>H {fmt(H)}</text>
+      {/* L label - top depth edge */}
+      <text x={ox + w - dOffset / 2 + 4} y={oy - dOffset * 0.55 - 8} textAnchor="middle" fontSize="10" fill="#1B2A4A" fontWeight="600">L {fmt(L)}</text>
+    </svg>
+  );
+}
+
+// Simple stacked cross-section showing the ply construction
+function PlyDiagram({ layerTypes, layerGsms, layerBFs }) {
+  const bandH = 26, bandW = 90, ox = 50, oy = 20;
+  return (
+    <svg viewBox="0 0 260 200" width="100%" height="170" fontFamily="'IBM Plex Mono', monospace">
+      <defs>
+        <pattern id="fluteWave" patternUnits="userSpaceOnUse" width="12" height="10">
+          <path d="M0,8 Q3,2 6,8 T12,8" stroke="#8A5A2B" strokeWidth="1.2" fill="none" />
+        </pattern>
+      </defs>
+      {layerTypes.map((type, i) => (
+        <g key={i}>
+          <rect
+            x={ox} y={oy + i * bandH} width={bandW} height={bandH - 3}
+            fill={type === "flute" ? "#F3E7D6" : "#E4E9F1"}
+            stroke="#2B4C7E" strokeWidth="1"
+          />
+          {type === "flute" && (
+            <rect x={ox} y={oy + i * bandH} width={bandW} height={bandH - 3} fill="url(#fluteWave)" />
+          )}
+          <text x={ox + bandW + 8} y={oy + i * bandH + (bandH - 3) / 2 - 2} fontSize="9" fill="#1B2A4A" fontWeight="600">
+            {type === "flute" ? "Flute" : "Liner"}
+          </text>
+          <text x={ox + bandW + 8} y={oy + i * bandH + (bandH - 3) / 2 + 10} fontSize="8" fill="#8A5A2B">
+            {layerGsms[i] ?? "—"} GSM · {layerBFs[i] ?? "—"}BF
+          </text>
+        </g>
+      ))}
+    </svg>
   );
 }
 
@@ -1636,6 +3099,10 @@ const styles = {
     fontSize: 14, fontFamily: "'IBM Plex Mono', monospace", background: "#F7F6F1", color: "#556077",
   },
   defaultsHint: { fontSize: 12.5, color: "#8A93AC", lineHeight: 1.5, marginTop: -4, marginBottom: 4 },
+  rscNote: { fontSize: 12, color: "#8A93AC", fontStyle: "italic", marginTop: -6, marginBottom: 14 },
+  diagramRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
+  diagramCell: { background: "#F7F6F1", borderRadius: 8, padding: "10px 8px", textAlign: "center" },
+  diagramCaption: { fontSize: 11.5, color: "#556077", marginTop: 4, fontWeight: 600 },
   toast: {
     position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
     padding: "10px 18px", borderRadius: 8, fontSize: 13.5, fontWeight: 600, zIndex: 20,
