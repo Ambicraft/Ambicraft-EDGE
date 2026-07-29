@@ -20,7 +20,7 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
   import {
     getFirestore, doc, getDoc, setDoc,
-    collection, addDoc, getDocs, deleteDoc
+    collection, addDoc, getDocs, deleteDoc, updateDoc
   } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
   import {
     getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged
@@ -58,6 +58,21 @@
   };
   window.__fbSubmissionDelete = async (id) => {
     await deleteDoc(doc(db, "submissions", id));
+  };
+
+  window.__fbInventoryAdd = async (record) => {
+    const ref = await addDoc(collection(db, "inventory"), record);
+    return ref.id;
+  };
+  window.__fbInventoryGetAll = async () => {
+    const snap = await getDocs(collection(db, "inventory"));
+    return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+  };
+  window.__fbInventoryUpdate = async (id, patch) => {
+    await updateDoc(doc(db, "inventory", id), patch);
+  };
+  window.__fbInventoryDelete = async (id) => {
+    await deleteDoc(doc(db, "inventory", id));
   };
 
   window.__fbSignIn = async (email, password) => {
@@ -228,6 +243,8 @@ function PROGRESS_STEPS_DEF(detailsRef, dimsRef, previewRef, printRef) {
   ];
 }
 
+const APP_VERSION = "ApiV4";
+
 const PREMIUM_STYLES = `
         html, body { overscroll-behavior-y: none; }
         * { box-sizing: border-box; }
@@ -249,6 +266,12 @@ const PREMIUM_STYLES = `
           transition: color 0.15s;
         }
         .cs-staff-link:hover { color: #1B2A4A; }
+        .cs-version-badge {
+          position: fixed; top: 8px; right: 10px; z-index: 300;
+          font-size: 10px; font-weight: 600; color: #C7CCD6;
+          background: rgba(250,250,247,0.85); padding: 2px 7px; border-radius: 6px;
+          pointer-events: none;
+        }
         .cs-progress-bar {
           position: sticky; top: 0; z-index: 200; display: flex; justify-content: center; align-items: center;
           gap: 4px; flex-wrap: nowrap; overflow-x: auto; background: rgba(250,250,247,0.92);
@@ -800,6 +823,58 @@ async function staffSignOut() {
   if (window.__fbSignOut) return window.__fbSignOut();
 }
 
+// Inventory reels are stored the same collection-style way as submissions —
+// one document per reel — so entries can be added, edited, and deleted
+// individually without rewriting a shared list each time.
+async function inventoryStoreAdd(record) {
+  const clean = JSON.parse(JSON.stringify(record));
+  if (window.__fbInventoryAdd) return window.__fbInventoryAdd(clean);
+  const id = `reel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  await window.storage.set(`inventory_${id}`, JSON.stringify(clean), true);
+  return id;
+}
+
+async function inventoryStoreGetAll() {
+  if (window.__fbInventoryGetAll) return window.__fbInventoryGetAll();
+  try {
+    const listRes = await window.storage.list("inventory_", true);
+    if (!listRes || !listRes.keys) return [];
+    const items = await Promise.all(listRes.keys.map(async (key) => {
+      try {
+        const res = await window.storage.get(key, true);
+        if (!res) return null;
+        return { ...JSON.parse(res.value), id: key.replace("inventory_", "") };
+      } catch (e) {
+        return null;
+      }
+    }));
+    return items.filter(Boolean);
+  } catch (e) {
+    return [];
+  }
+}
+
+async function inventoryStoreUpdate(id, patch) {
+  const cleanPatch = JSON.parse(JSON.stringify(patch));
+  if (window.__fbInventoryUpdate) return window.__fbInventoryUpdate(id, cleanPatch);
+  try {
+    const res = await window.storage.get(`inventory_${id}`, true);
+    const current = res && res.value ? JSON.parse(res.value) : {};
+    await window.storage.set(`inventory_${id}`, JSON.stringify({ ...current, ...cleanPatch }), true);
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function inventoryStoreDelete(id) {
+  if (window.__fbInventoryDelete) return window.__fbInventoryDelete(id);
+  try {
+    await window.storage.delete(`inventory_${id}`, true);
+  } catch (e) {
+    // ignore
+  }
+}
+
 function getCachedJSON(key, fallback) {
   try {
     if (typeof localStorage !== "undefined") {
@@ -940,6 +1015,11 @@ function StaffApp({ onExit }) {
   const [layersOverridden, setLayersOverridden] = useState(false);
   const [orders, setOrders] = useState([]);
   const [customerSubmissions, setCustomerSubmissions] = useState([]);
+  const [inventoryReels, setInventoryReels] = useState([]);
+  const [addingReel, setAddingReel] = useState(false);
+  const [editingReelId, setEditingReelId] = useState(null);
+  const [reelDraft, setReelDraft] = useState(null);
+  const [confirmDeleteReel, setConfirmDeleteReel] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [search, setSearch] = useState("");
   const [toast, setToast] = useState(null);
@@ -1140,6 +1220,101 @@ function StaffApp({ onExit }) {
     setCustomerSubmissions((cur) => cur.filter((s) => s.id !== id));
     setConfirmDeleteSub(null);
     showToast("success", "Submission removed");
+  }
+
+  // Load kraft paper reel inventory from storage
+  useEffect(() => {
+    (async () => {
+      try {
+        const items = await inventoryStoreGetAll();
+        items.sort((a, b) => new Date(b.dateOfInvoice || 0) - new Date(a.dateOfInvoice || 0));
+        setInventoryReels(items);
+      } catch (e) {
+        // none yet
+      }
+    })();
+  }, []);
+
+  function blankReelDraft() {
+    return {
+      supplierId: "",
+      supplierName: "",
+      invoiceNumber: "",
+      dateOfInvoice: "",
+      costPerKg: "",
+      reelNumber: "",
+      reelSizeCm: "",
+      gsm: "",
+      bf: "20",
+      initialWeightKg: "",
+      totalCost: "",
+      currentWeightKg: "",
+    };
+  }
+
+  function startAddingReel() {
+    setReelDraft(blankReelDraft());
+    setAddingReel(true);
+    setEditingReelId(null);
+  }
+
+  function startEditingReel(reel) {
+    setReelDraft({ ...reel });
+    setEditingReelId(reel.id);
+    setAddingReel(false);
+  }
+
+  function cancelReelEdit() {
+    setAddingReel(false);
+    setEditingReelId(null);
+    setReelDraft(null);
+  }
+
+  function updateReelDraftField(field, value) {
+    setReelDraft((d) => {
+      const next = { ...d, [field]: value };
+      // Keep Total Cost and Current Weight sensibly in sync when adding a new reel,
+      // while still letting staff override either manually afterward.
+      if ((field === "initialWeightKg" || field === "costPerKg") && addingReel) {
+        const w = num(field === "initialWeightKg" ? value : next.initialWeightKg);
+        const c = num(field === "costPerKg" ? value : next.costPerKg);
+        if (w > 0 && c > 0) next.totalCost = String(Math.round(w * c));
+      }
+      if (field === "initialWeightKg" && addingReel) {
+        next.currentWeightKg = value;
+      }
+      // Auto-fill Supplier Name from a previously-used Supplier ID, so staff
+      // don't have to retype the same supplier's name every time.
+      if (field === "supplierId" && value.trim() && !d.supplierName?.trim()) {
+        const match = inventoryReels.find((r) => r.supplierId && r.supplierId.trim() === value.trim());
+        if (match && match.supplierName) next.supplierName = match.supplierName;
+      }
+      return next;
+    });
+  }
+
+  async function saveReelDraft() {
+    if (!reelDraft.supplierName.trim() || !reelDraft.reelNumber.trim() || num(reelDraft.reelSizeCm) <= 0 || num(reelDraft.gsm) <= 0) {
+      showToast("error", "Please fill in at least Supplier Name, Reel Number, Reel Size, and GSM.");
+      return;
+    }
+    if (addingReel) {
+      const id = await inventoryStoreAdd(reelDraft);
+      setInventoryReels((cur) => [{ ...reelDraft, id }, ...cur]);
+      showToast("success", "Reel added to inventory");
+    } else if (editingReelId) {
+      await inventoryStoreUpdate(editingReelId, reelDraft);
+      setInventoryReels((cur) => cur.map((r) => (r.id === editingReelId ? { ...r, ...reelDraft } : r)));
+      showToast("success", "Reel updated");
+    }
+    cancelReelEdit();
+  }
+
+  async function deleteReel(id) {
+    await inventoryStoreDelete(id);
+    setInventoryReels((cur) => cur.filter((r) => r.id !== id));
+    setConfirmDeleteReel(null);
+    showToast("success", "Reel removed from inventory");
   }
 
   function loadSubmissionIntoCalculator(s) {
@@ -1794,7 +1969,14 @@ function StaffApp({ onExit }) {
         @media (max-width: 760px) {
           .bc-grid { grid-template-columns: 1fr !important; }
         }
+        .cs-version-badge {
+          position: fixed; top: 8px; right: 10px; z-index: 300;
+          font-size: 10px; font-weight: 600; color: #9AA3B8;
+          background: rgba(250,250,247,0.9); padding: 2px 7px; border-radius: 6px;
+          pointer-events: none;
+        }
       `}</style>
+      <div className="cs-version-badge">{APP_VERSION}</div>
 
       <header style={styles.header}>
         <div style={styles.headerInner}>
@@ -1833,6 +2015,13 @@ function StaffApp({ onExit }) {
               onClick={() => setTab("customerOrders")}
             >
               Online Order Requests {customerSubmissions.length > 0 ? `(${customerSubmissions.length})` : ""}
+            </button>
+            <button
+              className="bc-btn"
+              style={{ ...styles.tabBtn, ...(tab === "inventory" ? styles.tabBtnActive : {}) }}
+              onClick={() => setTab("inventory")}
+            >
+              Inventory {inventoryReels.length > 0 ? `(${inventoryReels.length})` : ""}
             </button>
             <button
               className="bc-btn"
@@ -2444,6 +2633,141 @@ function StaffApp({ onExit }) {
           </div>
         )}
 
+        {tab === "inventory" && (
+          <div style={styles.panel}>
+            <div style={styles.ordersHeader}>
+              <div>
+                <div style={styles.panelLabel}>KRAFT PAPER REEL</div>
+                <p style={styles.defaultsHint}>
+                  Track your kraft paper reel stock, per layer role, so the workspace can check what's actually
+                  available before quoting an order.
+                </p>
+              </div>
+              {!addingReel && !editingReelId && (
+                <button className="bc-btn" style={styles.primaryBtn2} onClick={startAddingReel}>+ Add Reel</button>
+              )}
+            </div>
+
+            {(addingReel || editingReelId) && reelDraft && (
+              <div style={{ background: "#F7F6F1", borderRadius: 12, padding: 18, marginBottom: 20 }}>
+                <div className="bc-grid" style={styles.grid}>
+                  <Field label="Supplier ID">
+                    <input className="bc-input" style={styles.inputSm} value={reelDraft.supplierId}
+                      onChange={(e) => updateReelDraftField("supplierId", e.target.value)} />
+                  </Field>
+                  <Field label="Supplier Name">
+                    <input className="bc-input" style={styles.inputSm} value={reelDraft.supplierName}
+                      onChange={(e) => updateReelDraftField("supplierName", e.target.value)} />
+                  </Field>
+                  <Field label="Invoice Number">
+                    <input className="bc-input" style={styles.inputSm} value={reelDraft.invoiceNumber}
+                      onChange={(e) => updateReelDraftField("invoiceNumber", e.target.value)} />
+                  </Field>
+                  <Field label="Date of Invoice">
+                    <input className="bc-input" style={styles.inputSm} type="date" value={reelDraft.dateOfInvoice}
+                      onChange={(e) => updateReelDraftField("dateOfInvoice", e.target.value)} />
+                  </Field>
+                  <Field label="Cost per kg (₹)">
+                    <input className="bc-input" style={styles.inputSm} type="number" step="0.01" value={reelDraft.costPerKg}
+                      onChange={(e) => updateReelDraftField("costPerKg", e.target.value)} />
+                  </Field>
+                  <Field label="Reel Number">
+                    <input className="bc-input" style={styles.inputSm} value={reelDraft.reelNumber}
+                      onChange={(e) => updateReelDraftField("reelNumber", e.target.value)} />
+                  </Field>
+                  <Field label="Reel Size / Width (cm)">
+                    <input className="bc-input" style={styles.inputSm} type="number" value={reelDraft.reelSizeCm}
+                      onChange={(e) => updateReelDraftField("reelSizeCm", e.target.value)} />
+                  </Field>
+                  <Field label="GSM">
+                    <input className="bc-input" style={styles.inputSm} type="number" value={reelDraft.gsm}
+                      onChange={(e) => updateReelDraftField("gsm", e.target.value)} />
+                  </Field>
+                  <Field label="BF">
+                    <select className="bc-select" style={styles.inputSm} value={reelDraft.bf}
+                      onChange={(e) => updateReelDraftField("bf", e.target.value)}>
+                      {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Initial Reel Weight (kg)">
+                    <input className="bc-input" style={styles.inputSm} type="number" value={reelDraft.initialWeightKg}
+                      onChange={(e) => updateReelDraftField("initialWeightKg", e.target.value)} />
+                  </Field>
+                  <Field label="Total Cost of Reel (₹)">
+                    <input className="bc-input" style={styles.inputSm} type="number" value={reelDraft.totalCost}
+                      onChange={(e) => updateReelDraftField("totalCost", e.target.value)} />
+                  </Field>
+                  <Field label="Current Reel Weight (kg)">
+                    <input className="bc-input" style={styles.inputSm} type="number" value={reelDraft.currentWeightKg}
+                      onChange={(e) => updateReelDraftField("currentWeightKg", e.target.value)} />
+                  </Field>
+                </div>
+                <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                  <button className="bc-btn" style={styles.ghostBtn} onClick={cancelReelEdit}>Cancel</button>
+                  <button className="bc-btn" style={styles.primaryBtn2} onClick={saveReelDraft}>
+                    {addingReel ? "Add Reel" : "Save Changes"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {inventoryReels.length === 0 ? (
+              <div style={styles.emptyState}>No reels in inventory yet. Click "+ Add Reel" to get started.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Reel #</th>
+                      <th style={styles.th}>Supplier</th>
+                      <th style={styles.th}>Invoice</th>
+                      <th style={styles.th}>Size (cm)</th>
+                      <th style={styles.th}>GSM</th>
+                      <th style={styles.th}>BF</th>
+                      <th style={styles.th}>Cost/kg</th>
+                      <th style={styles.th}>Initial (kg)</th>
+                      <th style={styles.th}>Current (kg)</th>
+                      <th style={styles.th}>Total Cost</th>
+                      <th style={styles.stickyActionsTh}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inventoryReels.map((r) => (
+                        <tr key={r.id} className="bc-row">
+                          <td style={styles.td}>{r.reelNumber || "—"}</td>
+                          <td style={styles.td}>{r.supplierName || "—"}</td>
+                          <td style={styles.td}>{r.invoiceNumber || "—"}</td>
+                          <td style={styles.td}>{r.reelSizeCm || "—"}</td>
+                          <td style={styles.td}>{r.gsm || "—"}</td>
+                          <td style={styles.td}>{r.bf ? `${r.bf}BF` : "—"}</td>
+                          <td style={styles.td}>{r.costPerKg ? `₹${r.costPerKg}` : "—"}</td>
+                          <td style={styles.td}>{r.initialWeightKg || "—"}</td>
+                          <td style={{ ...styles.td, fontWeight: 700, color: num(r.currentWeightKg) <= 0 ? "#B23B3B" : "#1B2A4A" }}>
+                            {r.currentWeightKg || "0"}
+                          </td>
+                          <td style={styles.td}>{r.totalCost ? `₹${r.totalCost}` : "—"}</td>
+                          <td style={styles.stickyActionsTd}>
+                            {confirmDeleteReel === r.id ? (
+                              <span style={{ display: "flex", gap: 6 }}>
+                                <button className="bc-btn" style={styles.linkBtnDanger} onClick={() => deleteReel(r.id)}>Confirm</button>
+                                <button className="bc-btn" style={styles.linkBtn} onClick={() => setConfirmDeleteReel(null)}>Cancel</button>
+                              </span>
+                            ) : (
+                              <span style={{ display: "flex", gap: 10 }}>
+                                <button className="bc-btn" style={styles.linkBtn} onClick={() => startEditingReel(r)}>Edit</button>
+                                <button className="bc-btn" style={styles.linkBtnDanger} onClick={() => setConfirmDeleteReel(r.id)}>Delete</button>
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === "defaults" && (
           <div style={styles.panel}>
             <div style={styles.ordersHeader}>
@@ -3000,12 +3324,10 @@ function StaffApp({ onExit }) {
             </div>
 
             {["3", "5", "7"].map((ply) => {
-              const types = layerTypesForPly(ply);
-              const activeCustomerDefaults = editingCustomerDefaults ? draftCustomerDefaults : customerDefaults;
               return (
                 <div key={ply}>
                   <div style={styles.divider} />
-                  <div style={styles.panelLabel}>{ply}-PLY — FLAP BENDING &amp; GSM</div>
+                  <div style={styles.panelLabel}>{ply}-PLY — FLAP BENDING</div>
                   <div className="bc-grid" style={styles.grid}>
                     <Field label="Flap bending (cm)">
                       {editingCustomerDefaults ? (
@@ -3015,30 +3337,6 @@ function StaffApp({ onExit }) {
                         <div style={styles.readOnlyVal}>{customerDefaults.flapByPly[ply]} cm</div>
                       )}
                     </Field>
-                    {types.map((type, i) => (
-                      <Field key={i} label={`${layerLabel(type, i, types)} GSM`}>
-                        {editingCustomerDefaults ? (
-                          <input className="bc-input" style={styles.inputSm} type="number"
-                            value={(draftCustomerDefaults.layerGsmsByPly[ply] || [])[i] ?? ""}
-                            onChange={(e) => updateCustomerDraftLayerGsm(ply, i, e.target.value)} />
-                        ) : (
-                          <div style={styles.readOnlyVal}>{(activeCustomerDefaults.layerGsmsByPly[ply] || [])[i]}</div>
-                        )}
-                      </Field>
-                    ))}
-                    {types.map((type, i) => (
-                      <Field key={`bf-${i}`} label={`${layerLabel(type, i, types)} BF`}>
-                        {editingCustomerDefaults ? (
-                          <select className="bc-select" style={styles.inputSm}
-                            value={(draftCustomerDefaults.layerBFsByPly[ply] || [])[i] ?? "20"}
-                            onChange={(e) => updateCustomerDraftLayerBF(ply, i, e.target.value)}>
-                            {BF_OPTIONS.map((bf) => <option key={bf} value={bf}>{bf}BF</option>)}
-                          </select>
-                        ) : (
-                          <div style={styles.readOnlyVal}>{(activeCustomerDefaults.layerBFsByPly[ply] || [])[i]}BF</div>
-                        )}
-                      </Field>
-                    ))}
                   </div>
                 </div>
               );
@@ -4027,8 +4325,11 @@ function CustomerView({ onStaffLoginClick }) {
             {branding.heading}
           </span>
         </div>
-        <button className="cs-staff-link" onClick={onStaffLoginClick}>{branding.staffLoginLabel || "Employee Portal"}</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button className="cs-staff-link" onClick={onStaffLoginClick}>{branding.staffLoginLabel || "Employee Portal"}</button>
+        </div>
       </div>
+      <div className="cs-version-badge">{APP_VERSION}</div>
 
       {toast && (
         <div style={{ ...styles.toast, ...(toast.type === "error" ? styles.toastError : styles.toastSuccess) }}>
